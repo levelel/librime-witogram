@@ -1,7 +1,6 @@
 #ifndef RIME_GRAM_DB_H_
 #define RIME_GRAM_DB_H_
 
-#include <marisa.h>
 #include <darts.h>
 #include <rime/resource.h>
 #include <rime/dict/mapped_file.h>
@@ -20,17 +19,6 @@ struct MetadataV1 {
   OffsetPtr<char> double_array;
 };
 
-// New format metadata
-struct MetadataV2 {
-  static const int kFormatMaxLength = 32;
-  char format[kFormatMaxLength];
-  uint32_t db_checksum;
-  uint32_t trie_size;
-  OffsetPtr<char> trie_data;
-  uint32_t weights_size;
-  OffsetPtr<int> weights_data;
-};
-
 }  // namespace grammar
 
 class GramDb : public MappedFile {
@@ -44,25 +32,14 @@ class GramDb : public MappedFile {
 
   GramDb(const path& file_path)
       : MappedFile(file_path),
-        darts_trie_(new Darts::DoubleArray),
-        marisa_trie_(new marisa::Trie) {}
+        darts_trie_(new Darts::DoubleArray) {}
 
   bool Load();
-  bool Save();
-  bool Build(const vector<pair<string, double>>& data);
-  bool UpgradeToMarisa();
-  int Lookup(const string& context,
-             const string& word,
-             Match results[kMaxResults]);
+  void ExtractAll(std::vector<std::pair<std::string, int>>& extracted);
 
  private:
   the<Darts::DoubleArray> darts_trie_;
-  the<marisa::Trie> marisa_trie_;
-  bool is_marisa_ = false;
-  
   grammar::MetadataV1* metadata_v1_ = nullptr;
-  grammar::MetadataV2* metadata_v2_ = nullptr;
-  const int* weights_ = nullptr;
 };
 
 }  // namespace rime
