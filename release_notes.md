@@ -15,11 +15,12 @@
 3. 将解压出的 `.klm` 模型文件放置在你的 Rime 用户目录（或共享目录）中。
 4. 在你的 `*.schema.yaml` 或 `grammar.yaml` 配置中，将原本指向 `.gram` 模型的名称保持不变，`witogram` 插件会自动识别并优先加载同名的 `.klm` 模型。
 
-## 兼容性说明
+## ⚠️ 兼容性与共存说明
 
-`witogram` 是一个完全**兼容标准 Rime 引擎架构**的后端插件（`Processor` 和 `Filter`），它负责在 Rime 的 `Context` 内计算词句的语言模型概率。
+`witogram` 是一个完全**兼容标准 Rime 引擎架构**的底层语言模型打分组件。
+- **与原版 Octagram 冲突**：`witogram` 是对原版 `octagram` 的深度重构与上位替代，两者在底层注册了相同的组件名（`grammar`）和配置项。因此，**绝对不能在同一个 librime 编译体系中同时加载两者**，否则会导致冲突！在编译前，请务必从源码中彻底删除原有的 `plugins/octagram` 目录。
 - **与 Rime 前端的兼容性**：它**完全兼容**所有标准的 Rime 前端（例如 Weasel 小狼毫、Squirrel 鼠须管、Fcitx5-rime、同文输入法等）。
-- **如何使用**：只要你将 `librime-witogram` 作为一个插件编译进该前端所使用的 `librime` 核心库中，并在配置中启用 grammar，它就可以直接工作，**不需要**像 `witplace` 那样对前端进行任何特殊改造。
+- **如何使用**：只要你将 `librime-witogram` 作为一个插件编译进该前端所使用的 `librime` 核心库中，并在配置中启用 grammar，它就可以直接工作，无需对前端进行任何特殊改造。
 
 ## 致谢
 
