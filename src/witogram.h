@@ -5,6 +5,7 @@
 #include <rime/component.h>
 #include <rime/resource.h>
 #include <rime/gear/grammar.h>
+#include <mutex>
 
 namespace lm {
 namespace ngram {
@@ -45,6 +46,7 @@ class WitogramComponent : public Grammar::Component {
 
  private:
   map<string, the<lm::ngram::QuantTrieModel>> model_by_language_;
+  std::mutex mutex_;
 };
 
 }  // namespace rime

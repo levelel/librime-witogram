@@ -26,8 +26,8 @@ set(plugin_deps ${rime_library} kenlm kenlm_util PARENT_SCOPE)
 set(plugin_modules "witogram" PARENT_SCOPE)
 
 if(BUILD_TOOLS)
-  add_executable(dump_to_arpa tools/dump_to_arpa.cc)
-  target_include_directories(dump_to_arpa PRIVATE src third_party/kenlm)
+  add_executable(dump_to_arpa tools/dump_to_arpa.cc tools/gram_db.cc tools/gram_encoding.cc)
+  target_include_directories(dump_to_arpa PRIVATE src tools third_party/kenlm)
   target_link_libraries(dump_to_arpa rime-witogram-objs kenlm ${rime_library} ${Marisa_LIBRARY})
 
   install(TARGETS dump_to_arpa DESTINATION ${CMAKE_INSTALL_BINDIR})

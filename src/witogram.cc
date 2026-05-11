@@ -1,4 +1,3 @@
-#include "gram_encoding.h"
 #include "witogram.h"
 #include <algorithm>
 #include <rime/config.h>
@@ -79,13 +78,9 @@ double Witogram::Query(const string& context,
   // Use KenLM max order
   int n = model_->Order() - 1;
   int context_len = 0;
-  string context_query = grammar::encode(
-      last_n_unicode(context, n, context_len),
-      str_end(context));
+  string context_query = last_n_unicode(context, n, context_len);
       
-  string word_query = grammar::encode(
-      str_begin(word),
-      str_end(word));
+  string word_query = word;
 
   // Build KenLM state from context
   lm::ngram::State state;
@@ -94,7 +89,8 @@ double Witogram::Query(const string& context,
   const char* p = str_begin(context_query);
   const char* end = str_end(context_query);
   while (p < end) {
-    const char* next_p = grammar::next_unicode(p);
+    const char* next_p = p;
+    utf8::unchecked::next(next_p);
     if (next_p > end) next_p = end;
     std::string token(p, next_p);
     lm::ngram::State out;
@@ -107,21 +103,32 @@ double Witogram::Query(const string& context,
   // Score word tokens
   double total_prob = 0.0;
   
-  p = str_begin(word_query);
-  end = str_end(word_query);
-  
-  while (p < end) {
-    const char* next_p = grammar::next_unicode(p);
-    if (next_p > end) next_p = end;
-    std::string token(p, next_p);
-    
+  lm::WordIndex word_wid = model_->GetVocabulary().Index(word_query);
+  // In KenLM, NotFound() typically returns <unk> (index 0).
+  // If the word exists in the vocabulary, we score it as a whole word.
+  if (word_wid != model_->GetVocabulary().NotFound()) {
     lm::ngram::State out;
-    lm::WordIndex wid = model_->GetVocabulary().Index(token);
-    double prob = model_->Score(state, wid, out);
-    total_prob += prob;
-    
+    total_prob += model_->Score(state, word_wid, out);
     state = out;
-    p = next_p;
+  } else {
+    // Fallback to character-level scoring
+    p = str_begin(word_query);
+    end = str_end(word_query);
+    
+    while (p < end) {
+      const char* next_p = p;
+      utf8::unchecked::next(next_p);
+      if (next_p > end) next_p = end;
+      std::string token(p, next_p);
+      
+      lm::ngram::State out;
+      lm::WordIndex wid = model_->GetVocabulary().Index(token);
+      double prob = model_->Score(state, wid, out);
+      total_prob += prob;
+      
+      state = out;
+      p = next_p;
+    }
   }
 
   if (is_rear) {
@@ -147,6 +154,7 @@ Witogram* WitogramComponent::Create(Config* config) {
 }
 
 lm::ngram::QuantTrieModel* WitogramComponent::GetModel(const string& language) {
+  std::lock_guard<std::mutex> lock(mutex_);
   auto& loaded = model_by_language_[language];
   if (!loaded) {
     the<ResourceResolver> resolver(

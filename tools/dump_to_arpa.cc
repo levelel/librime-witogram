@@ -6,11 +6,53 @@
 #include <string>
 #include <cmath>
 #include <iomanip>
+#include <utf8.h>
 #include <rime/resource.h>
 #include "gram_db.h"
 #include "gram_encoding.h"
 
 using namespace rime;
+
+string decode(const char* begin, const char* end) {
+  string decoded_str;
+  for (auto p = begin; p < end; ) {
+    unsigned char c1 = *p;
+    if ((c1 & 0x80) == 0) {
+      if (c1 == 0) {
+        decoded_str += '\0';
+        p++;
+      } else {
+        decoded_str += *p++;
+      }
+    } else if ((c1 & 0xF0) == 0xE0) {
+      int bytes_to_decode = (c1 & 0x0F);
+      p++;
+      uint32_t u = 0;
+      for (int i = 0; i < bytes_to_decode; i++) {
+        u = (u << 7) | ((unsigned char)(*p++) & 0x7F);
+      }
+      char utf8_buf[5] = {0};
+      utf8::unchecked::append(u, utf8_buf);
+      decoded_str += utf8_buf;
+    } else {
+      uint32_t u = 0;
+      if (c1 == 0xE1) {
+        p++;
+        unsigned char c2 = *p++;
+        u = ((c2 - 0x40) << 8);
+      } else {
+        unsigned char c2 = *p++;
+        unsigned char c3 = *p++;
+        u = ((c2 - 0x40) << 8);
+        u |= c3;
+      }
+      char utf8_buf[5] = {0};
+      utf8::unchecked::append(u, utf8_buf);
+      decoded_str += utf8_buf;
+    }
+  }
+  return decoded_str;
+}
 
 int main(int argc, char** argv) {
   if (argc != 3) {
@@ -42,7 +84,8 @@ int main(int argc, char** argv) {
     for (const char* p = kv.first.c_str(); p < end; ) {
       const char* next_p = grammar::next_unicode(p);
       if (next_p > end) next_p = end;
-      std::string token(p, next_p);
+      std::string encoded_token(p, next_p);
+      std::string token = decode(encoded_token.c_str(), encoded_token.c_str() + encoded_token.length());
       
       // Check for control characters or whitespace in token
       for (char c : token) {
