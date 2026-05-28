@@ -22,6 +22,36 @@ class Config;
 struct GrammarConfig;
 class WitogramComponent;
 
+enum class WitogramTokenEvidenceLevel {
+  kDirectWholeWordHit = 0,
+  kSplitTokenSupported,
+  kNeutralMissing,
+  kMixedTokenMissing,
+  kSingleTokenMissing,
+  kTrueOov,
+};
+
+struct WitogramScoreFeatures {
+  double total_log10 = 0.0;
+  double avg_log10 = 0.0;
+  double eos_log10 = 0.0;
+  double whole_word_log10 = 0.0;
+  double char_path_log10 = 0.0;
+  double char_path_avg_log10 = 0.0;
+  size_t token_count = 0;
+  size_t context_token_count = 0;
+  size_t matched_token_count = 0;
+  size_t char_path_matched_token_count = 0;
+  size_t oov_token_count = 0;
+  size_t char_path_oov_token_count = 0;
+  bool used_bos = false;
+  bool used_char_fallback = false;
+  bool matched_whole_word = false;
+  bool has_char_path = false;
+  WitogramTokenEvidenceLevel token_evidence_level =
+      WitogramTokenEvidenceLevel::kNeutralMissing;
+};
+
 class Witogram : public Grammar {
  public:
   Witogram(Config* config, WitogramComponent* component);
@@ -29,6 +59,16 @@ class Witogram : public Grammar {
   double Query(const string& context,
                const string& word,
                bool is_rear) override;
+  bool InterpretGrammarEvidence(const string& context,
+                                const string& word,
+                                bool is_rear,
+                                WitogramScoreFeatures* features) const;
+  bool ScoreFeatures(const string& context,
+                     const string& word,
+                     bool is_rear,
+                     WitogramScoreFeatures* features) const;
+  double ngram_weight() const;
+  size_t max_context_tokens() const;
 
  private:
   the<GrammarConfig> config_;

@@ -136,12 +136,16 @@ int main(int argc, char** argv) {
     }
   }
 
-  // Find max score to normalize to <= 0.0
+  // Find max score to normalize to <= 0.0, and find min score for fallback
   float max_score = -1e9f;
+  float min_score = 1e9f;
   for (int i = 1; i <= max_order; ++i) {
     for (const auto& kv : ngrams[i]) {
       if (kv.second > max_score) {
         max_score = kv.second;
+      }
+      if (kv.second < min_score) {
+        min_score = kv.second;
       }
     }
   }
@@ -152,7 +156,8 @@ int main(int argc, char** argv) {
       kv.second = kv.second - max_score;
     }
   }
-  std::cout << "Max score was: " << max_score << ". Normalized all scores by subtracting it." << std::endl;
+  float normalized_min_score = min_score - max_score;
+  std::cout << "Max score was: " << max_score << ". Normalized min score: " << normalized_min_score << std::endl;
 
   // Generate missing 1-grams
   vocab.insert("<unk>");
@@ -161,7 +166,10 @@ int main(int argc, char** argv) {
   
   for (const auto& token : vocab) {
     if (ngrams[1].find(token) == ngrams[1].end()) {
-      ngrams[1][token] = -10.0f - max_score; // Ensure it's very low and normalized
+      // Set missing 1-grams to be slightly worse than the worst known ngram, 
+      // but not so disastrously low (-24) that it overrides Rime's native weights.
+      // -1.0 worse than the absolute minimum score in the corpus.
+      ngrams[1][token] = normalized_min_score - 1.0f; 
     }
   }
   if (max_order < 1) max_order = 1;
@@ -179,7 +187,11 @@ int main(int argc, char** argv) {
       // prob word [backoff]
       out << std::fixed << std::setprecision(6) << kv.second << "\t" << kv.first;
       if (i < max_order) {
-        out << "\t0.0"; // Default backoff
+        // [v6.0] Heuristic Backoff Penalty
+        // We MUST provide a negative backoff weight (e.g. -1.0). 
+        // If it is 0.0, backing off has no penalty, which causes shorter n-grams 
+        // to unjustly outscore longer exact-match n-grams.
+        out << "\t-1.0"; 
       }
       out << "\n";
     }

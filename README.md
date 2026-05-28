@@ -22,11 +22,12 @@
 - **KenLM + mmap 加载**：运行时通过 `KenLM` 的二进制模型配合 `mmap` 加载，具备更现代的模型访问方式。模型文件越大，对磁盘随机读取性能要求越高，推荐搭配高速 NVMe SSD 使用。
 - **线程安全的模型缓存**：模型加载器已经引入 `std::mutex`，在多线程初始化和多 schema 场景下比旧实现更安全。
 - **运行时架构更简洁**：用户端运行时已经不再依赖旧的 `gram_db` / `Darts::DoubleArray` 查询链，维护成本更低，也更适合后续继续演进。
+- **一档模式特征融合已开始落地**：`witogram` 运行时现在不再只提供单个 LM 分值，`witset_poet` 也已开始按显式特征项做句级融合，为追平或超过原版 `octagram` 的准确度做底层替换准备。
 
 ## 当前仍在校准的部分
 
 - **模型转换链路**：当前 `.gram -> .arpa -> .klm` 流程是以兼容旧模型为目标的过渡实现，还不能简单等价理解为“已经严格恢复出标准概率分布”。
-- **句级评分契约**：`witogram` 与 `witset_poet` 的分数融合仍在重构中，现阶段不应将其视为已经完成的对数线性模型。
+- **句级评分契约**：`witogram` 与 `witset_poet` 的分数融合已开始从旧的 `Dict + LmScaled` 混分迁移到显式特征契约，但参数仍在校准中，现阶段不应将其视为已经完成的对数线性模型。
 - **相对 `octagram` 的排序优势**：这是当前正在推进和验证的方向，而不是已经完成验收的事实。
 
 ## 项目路线
@@ -40,6 +41,30 @@
 路线说明文档见：
 
 - [route_b_implementation_plan.md](./docs/route_b_implementation_plan.md)
+- [validation_baseline.md](./docs/validation_baseline.md)
+
+## 本地验证快照
+
+为验证 `witogram + witset` 的本地候选排序链路，当前已经补上了可累计的本地快照导出能力：
+
+- `witset_translator` 会将每次本地造句结果追加写入 JSONL 快照文件，而不是只保留最后一次覆盖结果。
+- 每条记录包含当前输入、前文、候选列表以及 `Dict / DictNorm / LmRaw / LmScaled / LmAvg / Boundary / OOV / Len / Whole / Base / Pen / Adj / Total` 调试分项。
+- 仓库内提供了离线汇总脚本 `tools/summarize_local_snapshot.py`，可将累计快照整理成 `metrics.json`、`latest_candidates.json` 和 `regression_report.md`。
+- 这条链路已经通过真实运行验证：从 `rime_api_console` 实际驱动 `witset` 输入后，能够在用户目录成功产出 `witset_local_snapshot.jsonl` 和汇总报告。
+
+当前已确认的验证注意事项：
+
+- 如果只是单独打开 `llm_level_1`，而没有先关闭 `llm_level_3 / llm_level_2`，实际跑到的仍可能不是纯本地 N-gram 链路。
+- 做 `witogram` 本地排序验证时，应显式关闭 `llm_level_3` 和 `llm_level_2`，再开启 `llm_level_1`。
+
+推荐配置示例：
+
+```yaml
+translator:
+  debug_dump_local_snapshot: true
+  debug_local_snapshot_path: "C:/Users/Bing/AppData/Roaming/witty/debug/witset_local_snapshot.jsonl"
+  debug_dump_local_graph_snapshot: false
+```
 
 ## 配置文件说明
 

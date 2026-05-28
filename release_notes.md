@@ -1,38 +1,124 @@
-## 版本更新日志
+## 进展记录
 
-### v1.1.0 架构与性能深度优化
-* **修复底层编码隐患**：彻底移除了原版中自定义的 `0x4000-0xA000` 变长编码压缩逻辑。原编码在对接纯 UTF-8 的 KenLM 时会导致严重的词汇丢失（全部命中 `<unk>`）。现已重构 `dump_to_arpa` 与 `witogram.cc`，全面拥抱标准的 UTF-8 编码。
-* **引入动态分词降级机制 (Word/Char Fallback)**：在 `Query` 接口中实现了智能匹配策略。优先尝试 Word-level（词组级别）查询；若命中 `<unk>`，则自动 fallback 为 Character-level（单字）逐字累加计分。这使得插件既能完美兼容万象等传统的单字 N-gram 模型，又能直接支持未来的词组级模型。
-* **补全符合标准概率分布的 Backoff 权重**：原版的 `.gram` 模型为了极端压缩体积，剥离了 N-gram 的 Backoff（回退）概率。新版工具链在转换为 `.klm` 时，利用 KenLM 算法**完整补全并保留了所有层级的回退数据**。虽然模型物理体积因此变得比 `.gram` 稍大，但得益于 mmap 技术，**带来了极低的驻留内存 (RSS) 占用，物理内存消耗不再受模型文件大小限制，仅取决于实际打字时的活跃词频率**。
-* **增强多线程安全性**：在 `WitogramComponent::GetModel` 中引入了 `std::lock_guard<std::mutex>`，彻底解决了在 Rime 多个 Schema 同时并发初始化时可能引发的竞态崩溃风险。
-* **清理遗留死代码**：彻底移除了运行时不必要的 `gram_db.cc/h` 和 Darts 双数组相关逻辑，将旧有工具链完全隔离在离线构建流程中，大幅缩减了插件运行时的二进制体积。
+## 2026-05-16
 
----
+### 原版 `octagram` 对照基线已固化
 
-# 万象拼音量化模型 (Witogram KLM)
+- 已将首次原版 `Rime + octagram` 的 `300` 条对照结果保存到仓库：
+  - `docs/benchmark_artifacts/octagram_300_20260516/stock_rime_octagram_snapshot.jsonl`
+  - `docs/benchmark_artifacts/octagram_300_20260516/snapshot_summary/metrics.json`
+  - `docs/benchmark_artifacts/octagram_300_20260516/snapshot_summary/baseline_run_metadata.json`
+  - `docs/benchmark_artifacts/octagram_300_20260516/snapshot_summary/regression_report.md`
+- 这份副本作为路线 B 后续每一轮句级排序改造的稳定对照组，后续不应直接覆盖。
 
-这里提供了由 `witogram` 的转换工具链将**万象拼音**的 `.gram` 原始模型转换为 KenLM 高效 `.klm` 格式的模型文件。
+### 首次正面对比结论
 
-## 包含的模型
+- 在相同语料、相同句库、相同 `grammar`、相同 `shuangpin_algebra` 对齐条件下：
+  - 原版 `octagram`：`Top-1 = 0.683333`，`Top-3 = 0.700000`，`expected_not_found_count = 90`
+  - 当前 `witogram + witset_poet`：`Top-1 = 0.534884`，`Top-3 = 0.661130`，`expected_not_found_count = 83`
+- 这说明当前版本的主要短板不是候选召回，而是最终排序。
+- 也说明原版 `octagram` 对歧义拼音路径的抑制虽然粗暴，但在真实语料上是有效的。
 
-- `wanxiang-mini-zh-hans.klm`: 迷你版，内存占用极低。
-- `wanxiang-lts-zh-hans.klm`: 长期支持版，平衡了准确率与体积。
-- `wanxiang-big-zh-hans.klm`: 完整版，提供最佳的预测效果。
+### 对当前实现的新判断
 
-## 使用方法
+- 当前 `witogram::ScoreFeatures()` 已经能同时给出整词路径与逐字路径证据，但 `witset_poet` 还没有把这种差异真正转成强句级排序信号。
+- 现阶段只靠：
+  - `whole_word_bonus`
+  - `char_fallback_penalty`
+  - `boundary / length / oov`
+  仍不足以稳定压制 `di'e / qi'an` 一类碎裂路径。
+- 因此，下一步主线不再是继续微调常数，而是把“原版有效的歧义抑制能力”升级为更可解释的证据化特征。
 
-1. 确保你正在使用的 `librime` 已经集成了 `witogram` 插件。
-2. 下载本 Release 提供的 `.klm` 模型文件（可根据你的内存和性能需求选择 mini、lts 或 big 版本）。
-3. 将解压出的 `.klm` 模型文件放置在你的 Rime 用户目录（或共享目录）中。
-4. 在你的 `*.schema.yaml` 或 `grammar.yaml` 配置中，将原本指向 `.gram` 模型的名称保持不变，`witogram` 插件会自动识别并优先加载同名的 `.klm` 模型。
+### 下一步算法方向
 
-## ⚠️ 兼容性与共存说明
+- 下一阶段准备在 `witset_poet` 中引入三类新特征：
+  - `merge_gain`
+    - 用整词路径与逐字路径的 LM 分数差，判断“合并解释是否明显更自然”
+  - `fragment_penalty`
+    - 打击 `皇帝 + 俄`、`牵起 + 按` 一类结构碎裂路径
+  - `ambiguity_margin`
+    - 不看路径来源标签，而看该候选是否只能依赖弱解释才能存活
+- 目标不是复制原版的硬惩罚，而是在统一候选池里，用更精准、更可解释的句级证据超过它。
 
-`witogram` 是一个完全**兼容标准 Rime 引擎架构**的底层语言模型打分组件。
-- **与原版 Octagram 冲突**：`witogram` 是对原版 `octagram` 的深度重构与上位替代，两者在底层注册了相同的组件名（`grammar`）和配置项。因此，**绝对不能在同一个 librime 编译体系中同时加载两者**，否则会导致冲突！在编译前，请务必从源码中彻底删除原有的 `plugins/octagram` 目录。
-- **与 Rime 前端的兼容性**：它**完全兼容**所有标准的 Rime 前端（例如 Weasel 小狼毫、Squirrel 鼠须管、Fcitx5-rime、同文输入法等）。
-- **如何使用**：只要你将 `librime-witogram` 作为一个插件编译进该前端所使用的 `librime` 核心库中，并在配置中启用 grammar，它就可以直接工作，无需对前端进行任何特殊改造。
+## 2026-05-15
 
-## 致谢
+### 路线 B 阶段性结论更新
 
-特别感谢 [万象拼音](https://github.com/mirtlecn/rime-wanxiang) 项目制作并开源了如此高质量的中文 N-gram 模型数据！
+- 已将“拼音歧义消解与句级排序是一体能力”正式写入 `docs/route_b_implementation_plan.md`，后续不再把歧义路径简单视为特殊坏候选一票否决。
+- 基于当前 `300` 条自动化基线，阶段性结果已写入计划文档：
+  - `Top-1 Accuracy` 从 `0.358804` 提升到 `0.534884`
+  - `Top-3 Accuracy` 从 `0.435216` 提升到 `0.661130`
+- 已把剩余问题归纳为三类：
+  - 高频错词仍可能压过正确表达
+  - OOV/近 OOV 区分力不足
+  - 拼音歧义切分产生的坏路径仍可活到最终候选
+- 已在计划文档中补充 `Rime + octagram` 对照基准测试方案，并明确：
+  - 当前 `witogram` 基线脚本不能直接原样用于原版小狼毫
+  - 更推荐复用评测框架、替换驱动层，并建立隔离的 `octagram benchmark` 环境
+  - 若当前原版小狼毫环境无法确认已真实启用 `octagram`，则大概率需要重新编译与部署匹配版本的 `librime-octagram`
+
+### 一档模式底层算法重构
+
+- `witogram` 不再只暴露单一 `Query()` 分值，运行时新增了更细的语言模型特征输出能力，包括：
+  - `total_log10`
+  - `avg_log10`
+  - `token_count`
+  - `oov_token_count`
+  - `matched_whole_word`
+  - `used_char_fallback`
+- 空上下文初始化改为句首状态（BOS），不再沿用更松散的 `NullContext` 语义。
+- `witset_poet` 的一档本地评分从“`Dict + LmScaled` 启发式混分”升级为“基础分 + 显式特征项”：
+  - `Dict`
+  - `DictNorm`
+  - `LmScaled`
+  - `LmAvg`
+  - `Boundary`
+  - `OOV`
+  - `Len`
+  - `Whole`
+- 为避免长句和高同音分支在句级排序前被过早砍掉，原先固定写死的全局批量裁剪 `100` 已改为可配置的 `global_batch_limit`，默认按 beam 大小动态放宽。
+- `witset.schema.yaml` 已同步加入一档模式的新评分参数，默认值直接偏向准确度优先，而不是旧的激进性能裁剪。
+
+### 本地排序验证链路补齐
+
+- `witset_translator` 的本地快照导出已从“单文件覆盖”改为“JSONL 追加写入”。
+- 默认快照文件名调整为 `witset_local_snapshot.jsonl`，用于支持整份 `test_sentence.txt` 的连续跑批。
+- 当用户仍配置旧的 `.json` 路径时，运行时会自动规范化为 `.jsonl`，避免覆盖式文件格式和累计模式冲突。
+- 单条快照记录继续保留输入、前文、候选列表和 `Dict / DictNorm / LmRaw / LmScaled / LmAvg / Boundary / OOV / Len / Whole / Base / Pen / Adj / Total` 调试分项，便于追踪一档本地排序异常。
+
+### 离线汇总脚本新增
+
+- 新增 `tools/summarize_local_snapshot.py`，用于读取累计的本地快照 JSONL 文件。
+- 脚本会输出：
+  - `metrics.json`
+  - `latest_candidates.json`
+  - `regression_report.md`
+- 当前脚本默认汇总：
+  - 总记录数
+  - 唯一输入数
+  - 候选为空的输入
+  - Top-1 输出分布
+  - Top-1 分项分数均值
+  - 多次运行中 Top-1 不稳定的输入
+- 如果后续提供带 `input -> expected_text` 映射的参考文件，脚本也可以继续输出 Top-1 / Top-3 命中率。
+
+### 当前状态口径
+
+- `witogram` 已具备 `KenLM + mmap + UTF-8 + 线程安全` 的工程基础。
+- 当前主线仍然不是宣布“已经全面优于 `octagram`”，而是先把本地排序验证体系做实。
+- 现阶段最重要的目标是：
+  - 让本地候选排序结果可累计采集
+  - 让每次改动都能基于全量语料回看结果
+  - 为后续继续调整 `witogram + witset_poet` 的分数契约提供事实依据
+
+### 编译部署与真实链路验证
+
+- 已遵守工作区规则，在 `outwit-windows` 目录下执行 `build_and_deploy.bat`，未使用 `clean`，构建与部署成功。
+- 为生成 `rime_api_console.exe` 等验证工具，又在 `librime` 目录下执行了标准 `build.bat static`。
+- 之后从 `C:/Users/Bing/AppData/Roaming/witty` 用户目录实际运行 `rime_api_console.exe`，成功触发 `witset` 输入链路并写出：
+  - `C:/Users/Bing/AppData/Roaming/witty/debug/witset_local_snapshot.jsonl`
+  - `C:/Users/Bing/AppData/Roaming/witty/debug/snapshot_summary/metrics.json`
+  - `C:/Users/Bing/AppData/Roaming/witty/debug/snapshot_summary/regression_report.md`
+- 验证过程中确认了一点重要行为：
+  - 如果只执行 `set option llm_level_1`，默认的 `llm_level_3` 仍可能保持开启状态。
+  - 要验证纯本地 `witogram` 排序，必须先显式关闭 `llm_level_3` 和 `llm_level_2`，再开启 `llm_level_1`。

@@ -1,0 +1,105 @@
+{
+  "snapshot_format": "jsonl",
+  "total_records": 300,
+  "unique_inputs": 300,
+  "records_with_candidates": 300,
+  "records_without_candidates": 0,
+  "records_with_debug": 0,
+  "avg_candidate_count": 18.966667,
+  "avg_top1_total": null,
+  "avg_top1_dict": null,
+  "avg_top1_dict_norm": null,
+  "avg_top1_lm_scaled": null,
+  "avg_top1_lm_avg": null,
+  "avg_top1_boundary": null,
+  "avg_top1_oov": null,
+  "avg_top1_len": null,
+  "avg_top1_whole": null,
+  "unstable_input_count": 0,
+  "reference_case_count": 300,
+  "evaluated_input_count": 300,
+  "top1_accuracy": 0.683333,
+  "top3_accuracy": 0.7,
+  "most_common_top1_texts": [
+    {
+      "text": "在",
+      "count": 2
+    },
+    {
+      "text": "防控",
+      "count": 2
+    },
+    {
+      "text": "怎样才算好好休息",
+      "count": 2
+    },
+    {
+      "text": "年",
+      "count": 2
+    },
+    {
+      "text": "月",
+      "count": 2
+    },
+    {
+      "text": "休息",
+      "count": 2
+    },
+    {
+      "text": "今晨上班的路上",
+      "count": 1
+    },
+    {
+      "text": "风吹过新城是的接口",
+      "count": 1
+    },
+    {
+      "text": "法国梧桐的叶子啥啥坠落",
+      "count": 1
+    },
+    {
+      "text": "想不经意的黄碟",
+      "count": 1
+    },
+    {
+      "text": "扑簌簌散在狡辩",
+      "count": 1
+    },
+    {
+      "text": "忽然就觉得",
+      "count": 1
+    },
+    {
+      "text": "秋天是有气息的",
+      "count": 1
+    },
+    {
+      "text": "带着一点微量",
+      "count": 1
+    },
+    {
+      "text": "也带着一种不可挽回的流失",
+      "count": 1
+    },
+    {
+      "text": "我抬头看哪一束束的质押",
+      "count": 1
+    },
+    {
+      "text": "心里却不在这里",
+      "count": 1
+    },
+    {
+      "text": "而是被带回了许多年前",
+      "count": 1
+    },
+    {
+      "text": "回到闲的街道",
+      "count": 1
+    },
+    {
+      "text": "中学时的清晨",
+      "count": 1
+    }
+  ]
+}
