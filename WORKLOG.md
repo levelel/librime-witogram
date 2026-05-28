@@ -2506,8 +2506,8 @@
   - 也不是因为下一跳没有 exact continuation
   - 而是**下一跳虽仍是 `family_clean`，但在当前 `HasConfidentPrimaryExact()` 口径下没有形成 confident primary**
 - 因而下一步若继续，应优先围绕：
-  - `一直向往着 -> 远 / 与 / 于` 这一跳的 next-hop confident-primary 形成条件
-  - 尤其是当前单字 next-hop 是否天然被 `ClassifyPrimaryPathTag()` 的 exact-count / margin 口径排除
+  - `一直向往着` 到下一跳起点时的 exact landscape 为什么已有 `9` 条 strong exact 仍不能形成 confident primary
+  - 尤其是 `HasConfidentPrimaryExact()` 当前对 `family_clean + 多 strong exact` 的 margin 口径，是否仍把本应可确认的正确 continuation 与同层竞争形态一起压成 `legal_but_path_unconfirmed`
   - 而不是再把问题泛化回“上游 family 已脏”或“多字 request-stage 没开门”
 - 因而当前更合理的阶段决策是：
   - baseline 工具链优化先到这里即可
@@ -2521,6 +2521,28 @@
 - 直接把这些句子“单独裸跑”会失真，因为当前链路对孤立短句会明显退化，不能代表 baseline 中的真实场景；因此后续快速验证采用的是：
   - 保留每条 case 在原始 `300` 条语料中的 `preceding_text`
   - 用“原始前文 + 目标句”的方式做独立回放
+
+## 2026-05-27 继续前的 handoff 修正：`向往着` 的直接断点应表述为“同层 strong exact 竞争歧义”，不是“单字 next-hop 天然不入 confident-primary”
+
+- 重新核对 `partial_chain_stage_probe_result.json` 后修正了上一轮的口径误差：
+  - `next_hop_after_yizhi` 里的 `向往着` 当前读数是
+    - `path_next_prefix_family_tag = family_clean`
+    - `path_next_exact_count = 9`
+    - `path_next_has_confident_primary = false`
+  - 所以它卡在 `legal_but_path_unconfirmed` 的**直接原因**不是“下一跳只有单字候选”
+  - 而是“下一跳已有多条 strong exact continuation，但当前 `HasConfidentPrimaryExact()` 仍没把正确 continuation 从同层竞争中确认出来”
+- 为避免继续把问题误归类到旧的 `single-char bridge` 线路，已新建结构计划：
+  - `C:\Code\outwit\docs\superpowers\plans\2026-05-27-primary-path-contract-reframe.md`
+- 新计划的主旨是：
+  - 先把 `path confirmation` 失败原因升级成稳定证据对象
+  - 再在默认关闭的 translator gate 下，把
+    - `legal_primary_continuation`
+    - matching request-stage state
+    - family tail support
+    - exact ambiguity evidence
+    合并成新的 path confirmation 语义
+  - 明确避免再直接放宽 `HasConfidentPrimaryExact()` 或回到旧的单字桥补丁
+- 后续若继续执行该计划，应先跑 Task 1 / Task 2 的纯观测层，不直接进入行为修改。
   - 只观察目标句那一步的 `Top-1`
 - 对 E1 最小原型（`translator` 前移 `upstream_edge_prior`，同时将 `upstream_path_prior_weight=0` 防止双重计分）先做了第一轮快速止损：
   - 优先选最有信息量的 `octagram` 正确锚点做回放
@@ -22236,3 +22258,370 @@
   - 当前并不是“没有路可走”
   - 但剩下的路已经从“小步 patch”切换成“正式 P1 结构计划”
   - 后续继续时应直接按这份计划执行，而不是重新从新的局部小实验摸起
+
+## 2026-05-27 Task 2 基线恢复与代表集护栏修正：确认源码已回到纯观测态，`case7` 只能作为前列敏感句而不是 top1 护栏
+
+- 继续前先再次查重并核对当前停点：
+  - 复读了 `WORKLOG`、`2026-05-27-primary-path-contract-reframe.md`、`witset_translator.cc`
+  - 确认源码侧已经只保留 `PrimaryPathProbeReason` 观测层
+  - `primary_path_confirmed_by_family_tail` / family-tail gate 行为逻辑已不在当前源码里
+- 先清理旧工件，避免被 stale Task 3 结果误导：
+  - 发现 `partial_chain_stage_probe_result.json` 仍停留在旧的单 case Task 3 行为态
+  - `partial_chain_stage_probe.snapshot.jsonl` 与 `partial_chain_stage_probe.graph.jsonl` 都已长到约 `5 GB`
+  - 按既有纪律，直接在 terminal 手动删除了这两个大工件，再继续验证
+- 之后按最小恢复链重刷基线：
+  - 执行 `librime\build.bat static`
+  - 执行 `partial_chain_stage_probe.py --case case1_yizhixiangwang --mode full --retry-missing-probes`
+  - focused unittest：
+    - `test_case1_xiangwangzhe_exposes_exact_ambiguity_evidence`
+    - `test_case1_xiangwangzhe_exports_primary_path_probe_reason`
+    均转绿
+- fresh `case1 full` 明确确认：
+  - `向往着`
+    - `matching_request_state_text = 一直向往着`
+    - `continuation_tag = legal_primary_continuation`
+    - `path_tag = legal_but_path_unconfirmed`
+    - `path_confirmation_mode = blocked_by_exact_ambiguity`
+    - `path_next_prefix_family_tag = family_clean`
+    - `path_next_exact_count = 9`
+    - `request_stage_tag = not_request_stage_candidate`
+  - 说明当前运行工件已经回到 **Task 2 纯观测稳定态**，不再残留 Task 3 的 family-tail 提升标签
+- 随后用 `case1 / case2 / case3 / case4 / case7 --mode snapshot` 重刷最小代表集，得到：
+  - `case1`：top1 仍是 `一直想望着远方`
+  - `case2`：top1 为 `第一站是一座古老的小镇`
+  - `case3`：top1 为 `体验不一样的生活`
+  - `case4`：top1 为 `两旁是古色古香的建筑`
+  - `case7`：top1 为 `也带着一种不可挽回的流失`，正确句 `也带着一种不可挽回的流逝` 在 top2
+- 这一步顺手发现一个测试口径问题，而不是新的算法回归：
+  - `test_representative_snapshot_guardrails` 原先把 `case7` 当成必须 top1 正确的护栏
+  - 但复查旧日志可知，`case7` 长期都是“敏感句 / 顺带收益观察项”：
+    - 常见状态正是 top1 仍为 `流失`
+    - 正确句升到 top2 或 top3
+    - 甚至旧日志里还明确记过 `octagram` 在这句上也偏向 `流失`
+  - 因而该断言本身过严，会误报为“代表集回退”
+- 处理：
+  - 保留 `case2 / case3 / case4` 的 top1 强护栏
+  - 将 `case7` 调整为：
+    - 正确句仍需留在 top3
+    - 不再要求 top1 必须翻正
+  - 修改后 `test_representative_snapshot_guardrails` 已重新转绿
+- 当前阶段结论：
+  - 这轮没有新增行为实验，只完成了**Task 2 基线恢复**与**代表集护栏纠偏**
+  - 后续若继续推进 `case1`，应从当前已验证的纯观测态重新出发
+  - 不要再把 `case7` 当作“必须 top1 正确”的硬护栏；它更适合作为敏感句观察“正确句是否仍留在前列”
+
+## 2026-05-27 再补一层 exact landscape 观测：`向往着` 下一跳的 runner-up 已坐实为 `院方`
+
+- 在恢复到 Task 2 纯观测态后，继续顺着 `path confirmation` 全链路做静态收口：
+  - `BuildContinuationPathSummaries()` 只保留 next-hop exact landscape 的
+    - best exact text / weight
+    - second-best exact weight
+    - exact count
+  - `HasConfidentPrimaryExact()` 当前硬门槛是：
+    - `prefix_family_tag == family_clean`
+    - 且 `best_exact_weight - second_best_exact_weight >= 1.20`
+  - `case1` 当前 `向往着` 的 probe 读数是：
+    - `path_next_prefix_family_tag = family_clean`
+    - `path_next_exact_count = 9`
+    - `path_next_best_exact_gap = 0.334784`
+  - 因而它落到 `blocked_by_exact_ambiguity` 的直接原因已经可以明确表述为：
+    - 不是 family 不 clean
+    - 也不是没有 strong exact
+    - 而是 **next-hop best-vs-runner-up gap 明显低于当前 1.20 的 confident-primary 门槛**
+- 之前 probe 只有 gap，没有 runner-up 文本，仍然不够判断竞争形态是否稳定且有代表性。
+- 于是这轮只补最小观测，不改行为：
+  - 先在 `test_case1_family_tail_acceptance.py` 写红灯
+    - 要求 `向往着` 样本导出 `path_next_second_best_exact_text`
+  - 用当前代码重跑 `case1 full` 后，测试按预期红在缺字段
+  - 再在：
+    - `witset_translator.cc`
+    - `partial_chain_stage_probe.py`
+    补上 `path_next_second_best_exact_text`
+  - 重新 `librime\build.bat static`
+  - 再跑 `case1 full` 与 focused unittest，均已转绿
+- fresh `case1 full` 的新增关键证据：
+  - `path_next_best_exact_text = 远方`
+  - `path_next_second_best_exact_text = 院方`
+  - `path_next_best_exact_gap = 0.334784`
+- 这把当前断点又收紧了一步：
+  - `一直向往着` 的 next-hop exact landscape 并不是“远方 vs 一堆泛噪声”
+  - 当前最强竞争者就是同读音近形态的 `院方`
+  - 所以若下一步还要继续拆：
+    - 应优先围绕 `远方 / 院方` 这类同层 exact 竞争形态本身继续观察
+    - 而不是再把问题泛化回 request-stage 资格没开门
+  - 但仍保持原纪律：
+    - 不直接放宽 `HasConfidentPrimaryExact()`
+    - 不回到 family-tail gate
+    - 先继续补证据，再决定是否还有新的非重复结构入口
+
+## 2026-05-27 再补 next-hop exact top-k 观测：`向往着` 的竞争盘面已可见为 `远方 / 院方 / 园方`
+
+- 在重新复盘 `阶段2实施清单_P0_P1_P2.md` 与最近 `WORKLOG` 后，确认这轮继续做的是：
+  - 受控 `P1` 预验证中的**纯观测补强**
+  - 目标仍是解释 `P0` 后残余的 family/path drift
+  - 没有滑回：
+    - `witset_poet` 末端 patch
+    - continuation 直接放权
+    - `HasConfidentPrimaryExact()` 门槛放宽
+- 因为上一轮只拿到了：
+  - `best = 远方`
+  - `runner-up = 院方`
+  - `gap = 0.334784`
+  仍不足以判断这是不是单个 runner-up 现象，还是一个更稳定的同层 exact 小簇，所以这轮再补最小 top-k 观测。
+- 仍按 TDD 走：
+  - 先在 `test_case1_family_tail_acceptance.py` 写红灯：
+    - 要求 `path_next_top_exact_texts` 至少包含前两名，且前两名为 `远方`, `院方`
+  - 用当前代码重跑 `case1 full` 后，该测试按预期红在缺字段
+  - 然后只在观测层补实现：
+    - `witset_translator.cc`
+      - 在 `ContinuationPathSummary` 中增加 top exact 候选列表（当前仅保留 top3 文本）
+      - 在 `PrimaryPathProbeReason` 中增加 `next_top_exact_texts`
+      - 在 graph/probe JSON 序列化中导出 `path_next_top_exact_texts`
+    - `partial_chain_stage_probe.py`
+      - 透传 `path_next_top_exact_texts`
+  - 重新 `librime\build.bat static`
+  - 再跑 `case1 full` 与 focused unittest，均已转绿
+- fresh `case1 full` 的新增关键证据：
+  - `path_next_exact_count = 9`
+  - `path_next_top_exact_texts = [远方, 院方, 园方]`
+  - `path_next_best_exact_gap = 0.334784`
+- 这一步把竞争形态进一步定性为：
+  - 当前不是“`远方` 被一个偶发 runner-up 缠住”
+  - 而是出现了以 `yuanfang` 为核心的**同层同音 exact 小簇**
+  - top3 已经是：
+    - `远方`
+    - `院方`
+    - `园方`
+- 因而下一步若继续：
+  - 应优先把它当作“同层 exact cluster 竞争”来观察和解释
+  - 先查这类 cluster 是否普遍出现在 `family_clean + legal_primary_continuation` 但 gap 不足的场景
+  - 而不是立刻把它降格成单句特调，或者直接修改 confident-primary 规则
+
+## 2026-05-27 横向复核与工具止损：`case3` 未复现同类 path-level ambiguity，轻量 graph 模式试验判负回退
+
+- 为避免把 `远方 / 院方 / 园方` 过早误判成“已泛化的共性 exact cluster”，这轮先做了两步去重后的横向复核：
+  1. 先只在 fresh `case1 full` 工件中递归抽取所有 `blocked_by_exact_ambiguity` 样本
+  2. 若 `case1` 内只有单条独立样本，再用最小跨 case 方式验证
+- 第一步结果：
+  - `case1` 里实际只有 `向往着` 这一条独立的 path-level `blocked_by_exact_ambiguity`
+  - 之前看到的两条只是：
+    - `top_focus_candidates[0]`
+    - `focus_entries.向往着.samples[0]`
+    对同一候选的重复呈现
+  - 所以仅凭 `case1` 还不能说这是共性
+- 第二步一开始先试了更轻的 `probe` 模式跑 `case2 / case3 / case4`：
+  - 结果确认：`probe` 模式虽然足够看 `top_request_entries`
+  - 但 `graph_contract` / `transition_lm` 会被直接标成 `graph_collection_disabled`
+  - 因而它不适合继续判断 path-level `blocked_by_exact_ambiguity`
+- 随后做了一个最小工具实验，想给 `partial_chain_stage_probe.py` 增加“不收 snapshot、只收 graph contract”的轻量模式：
+  - 先写了 `resolve_collection_flags("graph")` 的红灯
+  - 再做了最小实现与脚本单测
+  - 但真实运行后，很快暴露出严重效率问题：
+    - graph 工件在很短时间内膨胀到约 `28.99 GB`
+    - 明显不符合当前项目对调试效率与工件体积的要求
+  - 因此这条工具路线立即止损：
+    - 停止运行
+    - 手动 terminal 删除超大 graph 工件
+    - 回退 `partial_chain_stage_probe.py` 与 `test_partial_chain_stage_probe.py` 的相关改动
+    - 只保留已得到的诊断结论，不保留这个未收敛的 graph 模式
+- 在工具试验止损后，转为只跑一个代表错例的 `full`：
+  - `case3_tiyanbuyiyang`
+  - 结果：递归扫描 fresh `case3 full` 的 `probe_results`，`blocked_by_exact_ambiguity` 样本数为 `0`
+- 当前阶段判断因此更新为：
+  - `case1` 的 `远方 / 院方 / 园方` path-level exact cluster **目前仍更像局部特征，不足以视为已泛化的共性入口**
+  - 至少在当前已复核的 `case3` 上，没有出现同构的 path-level ambiguity
+  - 若后续还要继续横向验证，必须先找到真正低成本的工件采样方式；当前这条“轻量 graph 模式”已判负，不要重走
+
+## 2026-05-27 继续收口 `case1` exact cluster：低成本链路已拿到 top exact 权重簇，但还拿不到更细 score breakdown
+
+- 在上一轮确认 `case1` 的 `远方 / 院方 / 园方` 还不足以视为共性后，这轮没有再横向扩 case，而是回到 `case1` 本身，继续查：
+  - 这三个 exact 候选当前究竟是不是一个足够紧的权重簇
+  - 以及在不重新读 5GB 级 raw graph 的前提下，还能低成本拿到哪些分值细节
+- 先做了去重后的静态确认：
+  - `partial_chain_stage_probe.py` 当前 `graph_contract.focus_entries` 已能透传很多 graph record 分值字段
+  - 但 `path_next_*` 证据链来自 `BuildContinuationPathSummaries()`
+  - 而这里迭代的是 `DictEntry`
+  - `DictEntry` 只有：
+    - `text`
+    - `weight`
+    - code / remaining_code_length / matching_code_size
+  - **没有** `base_score / dict_score_raw / lm_score_scaled / step_whole_word_log10 / step_char_path_log10`
+- 因此当前低成本路径的真实边界是：
+  - 可以继续补 `path_next` 的 top exact 文本与权重
+  - 但若想把 cluster 进一步拆成 `base/dict/lm` 三层来源，仍需要回到更重的 raw graph 记录链
+  - 这一步不能假装低成本链路已经能给出更细 score breakdown
+- 这轮仍按 TDD 走：
+  - 先在 `test_case1_family_tail_acceptance.py` 写红灯
+    - 要求 `向往着` 这条 row 导出 `path_next_top_exact_candidates`
+    - 且前三项文本为 `远方 / 院方 / 园方`
+    - 权重严格递减
+  - 用 fresh `case1 full` 工件跑 focused unittest，红灯正确落在：
+    - `KeyError: 'path_next_top_exact_candidates'`
+  - 然后只补最小观测：
+    - `witset_translator.cc`
+      - 把 `ContinuationPathSummary.top_exact_candidates` 从纯文本列表升级为 `text + weight`
+      - 把 `PrimaryPathProbeReason` 同步增加 `next_top_exact_candidates`
+      - 在 graph/probe JSON 中导出 `path_next_top_exact_candidates`
+    - `partial_chain_stage_probe.py`
+      - 透传 `path_next_top_exact_candidates`
+  - 重新 `librime\build.bat static`
+  - 再跑 `case1 full --retry-missing-probes`
+  - focused unittest：
+    - `test_case1_xiangwangzhe_exposes_exact_ambiguity_evidence`
+    - `test_case1_xiangwangzhe_exposes_exact_cluster_weights`
+    均已转绿
+- fresh `case1 full` 的新增关键证据：
+  - `path_next_best_exact_gap = 0.334784`
+  - `path_next_top_exact_candidates =`
+    - `远方` `-12.5486`
+    - `院方` `-12.8833`
+    - `园方` `-12.9400`
+  - 差额进一步展开为：
+    - `远方 - 院方 = 0.3347`
+    - `远方 - 园方 = 0.3914`
+    - `院方 - 园方 = 0.0567`
+- 这一步把当前判断收紧成：
+  - `case1` 的 `path_next` 竞争盘面确实是一个**很窄的 same-pronunciation exact weight cluster**
+  - 尤其 `院方 / 园方` 之间几乎并列，仅差 `0.0567`
+  - 当前 `远方` 虽居首，但离 `1.20` 的 confident-primary 门槛仍远得多，所以 `blocked_by_exact_ambiguity` 是稳定结果
+- 同时也明确了新的止损边界：
+  - 低成本 path-evidence 链路目前只能可靠回答：
+    - 哪几个 exact 候选在前列
+    - 它们的相对 `weight` 差多少
+  - 还**不能**直接回答：
+    - 这些权重差到底是 `base_score` 主导
+    - 还是 `dict_score_raw / lm_score_scaled / whole-word vs char-path` 主导
+  - 若下一步继续，必须先决定是否值得为这一个局部 cluster 再付出更高的 raw graph 读取成本；不要把“当前还拿不到更细 breakdown”误说成已经定位到某个具体 score source
+
+## 2026-05-27 复用现成轻工件继续下钻：`远方 / 院方 / 园方` 的 entry-local 差额已基本坐实由 LM/char-path 主导
+
+- 在上一条记录里，我先把边界收在：
+  - 低成本 `path_next` 证据链只能稳定拿到 `text + weight`
+  - 若想继续拆到 `base/dict/lm`，看起来需要回到更重 raw graph
+- 这轮继续前先做了一次“旧工件复用审计”，避免直接走高成本提取：
+  - `case1_yizhixiangwang.txt` 只有一行 `一直向往着远方`，无更多信息
+  - `case1_yizhixiangwang.graph.jsonl` 虽然包含 `远方/院方/园方` 字面值，但对当前 cluster 来说不是同源快照：
+    - 用更窄条件查 `entry_text/text/word/candidate_transition_text`
+    - `远方 / 院方 / 园方` 作为独立词项命中数为 `0`
+    - 说明这份 88MB graph 仍主要是旧的长链观测，不足以直接给当前 cluster 拆账
+- 随后继续更宽但仍低成本地扫 `debug/` 目录，找到真正有用的现成轻工件：
+  - `yizhixiangwang_transition_focus.json`
+    - 能解释早期 `一直向往着` / `一直想往这...` 链路的 `Base / Dict / LmRaw / StepCharLog10`
+    - 但不直接回答 `远方 / 院方 / 园方` 这组 next-hop exact cluster
+  - `partial_chain_stage_probe.next_hop.jsonl`
+    - 当前文件约 `231 MB`
+    - 用最窄 grep 直接命中了 `远方 / 院方 / 园方`
+    - 且同一条记录里已经带有：
+      - `base_score`
+      - `dict_score_raw`
+      - `lm_score_scaled`
+      - `step_char_path_log10`
+- 关键进一步确认：
+  - `partial_chain_stage_probe.next_hop.jsonl` 里**不存在**
+    - `source_text` 含 `一直向往着`
+    - 且 `entry_text in {远方, 院方, 园方}`
+    的同源记录
+  - 也就是说，现成轻工件还没把“当前正确 path 前驱 = 一直向往着”这条链直接落出来
+  - 但它已经落出了多组**非同源前驱**下的同一组三元组，可用于看 entry-local 分项是否稳定
+- 为避免混淆不同前驱，我固定了一组最可比的旧记录：
+  - `input = yizhixiangwangzheyuanfang`
+  - `stage = request`
+  - `source_text = 在新的生活里再次轻轻浮现。一直想王者`
+  - `generated_word_count = 2`
+  - 三个候选：
+    - `远方`
+      - `weight = -247.226`
+      - `base_score = -244.692`
+      - `dict_score_raw = -12.5486`
+      - `lm_score_scaled = -111.056`
+      - `step_char_path_log10 = -96.4618`
+    - `院方`
+      - `weight = -272.127`
+      - `base_score = -269.245`
+      - `dict_score_raw = -12.8833`
+      - `lm_score_scaled = -135.274`
+      - `step_char_path_log10 = -117.498`
+    - `园方`
+      - `weight = -272.191`
+      - `base_score = -269.302`
+      - `dict_score_raw = -12.94`
+      - `lm_score_scaled = -135.274`
+      - `step_char_path_log10 = -117.498`
+- 在这组可比记录里，`远方` 相对两者的分项差额为：
+  - `远方 - 院方`
+    - `weight = 24.901`
+    - `base_score = 24.553`
+    - `dict_score_raw = 0.3347`
+    - `lm_score_scaled = 24.218`
+    - `step_char_path_log10 = 21.0362`
+  - `远方 - 园方`
+    - `weight = 24.965`
+    - `base_score = 24.61`
+    - `dict_score_raw = 0.3914`
+    - `lm_score_scaled = 24.218`
+    - `step_char_path_log10 = 21.0362`
+- 更重要的是，我又把 `partial_chain_stage_probe.next_hop.jsonl` 中所有 `远方 / 院方 / 园方` 旧记录按 entry 聚合，发现它们在 **8 条不同前驱记录** 下，以下分项完全稳定复现：
+  - `远方`
+    - `dict_score_raw = -12.5486`
+    - `lm_score_scaled = -111.056`
+    - `step_char_path_log10 = -96.4618`
+  - `院方`
+    - `dict_score_raw = -12.8833`
+    - `lm_score_scaled = -135.274`
+    - `step_char_path_log10 = -117.498`
+  - `园方`
+    - `dict_score_raw = -12.94`
+    - `lm_score_scaled = -135.274`
+    - `step_char_path_log10 = -117.498`
+  - 且三者 `used_char_fallback` 都稳定为 `false`
+- 这把当前判断进一步收紧为：
+  - 虽然现成轻工件还没有直接暴露“同源前驱 = 一直向往着”的三元组 breakdown
+  - 但当前 cluster 的**entry-local 分项模式**已经很稳定：
+    - `远方` 相比 `院方/园方` 的字典分差只有 `0.33 ~ 0.39`
+    - 真正拉开的是：
+      - `lm_score_scaled` 约 `24.218`
+      - `step_char_path_log10` 约 `21.0362`
+  - 因而在目前证据下，最稳的阶段结论应更新为：
+    - `远方 / 院方 / 园方` 这组 exact cluster 的主差额**基本坐实是 entry-local LM / char-path 主导**
+    - 不是局部前驱偶然波动，更不像只是 `dict_score_raw` 那点小差额造成
+- 仍保留一条谨慎边界：
+  - 这结论当前是“强旁证 + 多前驱稳定复现”
+  - 还不是“同源前驱 = 一直向往着”下的直接抓包
+  - 若后续要把表述再升级到“当前正确 path 下也已直接证实”，仍需设计一次更受控的定点提取，而不是再泛跑大 graph
+
+
+## 2026-05-27 重大证据突破：case1 的真正上游断点是 SelectTopLines，不是 path_confirmation
+
+- 在上一轮得出 entry-local LM/char-path 主导差额的旁证后，本轮继续沿同一个 
+ext_hop.jsonl 做更深链路追踪，发现了改判级证据。
+- 关键链路回溯：
+  1. 一直向往着 作为 source，远 的 	oken_evidence_tag = direct_whole_word_hit，且走完了 
+equest → batch_selected → admitted_new → compact → source_pool 全链路。
+  2. 一直向往着远 在 source_pool 里的 weight = -227.308
+  3. 但 一直向往着远 **从未成为 SelectTopLines 选中的 	op_candidate**：
+     - yizhixiangwangzheyuanfang 的 	op_candidate 只有 6 条：
+
+       | source | weight |
+       |---|---|
+       | 一直想王者 | -148.496 |
+       | 一支香王者 | -150.538 |
+       | 一直想王者 | -121.088 |
+       | 一支香王者 | -123.13 |
+       | 一直 | -114.209 |
+       | 一直 | -78.325 |
+
+  4. 全部 6 条 top_candidate 都是**错误 family** 或基础前缀，正确 family 的 一直向往着远 以约 **78.8 分**的巨大差距被挤出候选。
+  5. 因此，错误 family 的 一直想王者 / 一支香王者 被选中作为 source，随后产生 远方/院方/园方 作为 entry，从而形成了我们在 path_next 层观测到的 exact cluster。
+  6. 而正确 family 的 一直向往着 虽然能产生 远 并被 admitted，但累计 beam 分差距太大，在 SelectTopLines() 阶段就已经被砍掉了——方（或 远方 作为整词 entry）**从未从正确 family 被评估过**。
+
+- 这是对 case1 诊断的**根本性修正**：
+  - 之前多轮聚焦的 path_confirmation、HasConfidentPrimaryExact()、locked_by_exact_ambiguity，实际上是**下游症状**
+  - path_next 层看到的 远方/院方/园方 exact cluster，来自错误 family 的 source（一直想王者 / 一支香王者），不是来自正确 family（一直向往着）
+  - 真正的上游断点是：
+    - 正确 family 的累计 beam 分远低于错误 family
+    - SelectTopLines() 在更早的阶段就把正确 family 裁掉了
+    - 所以 HasConfidentPrimaryExact() 那套门槛对 case1 来说根本还没走到从正确 family 出发的那一步
+
+- 这意味着：
+  - 继续在 HasConfidentPrimaryExact() / path-gate 层面围绕 case1 做微调，属于对着错误 family 的 next-hop cluster 努力
+  - case1 的真正解法如果存在，必须回到更早的 **prefix beam 竞争** 或 **SelectTopLines 选择面**
