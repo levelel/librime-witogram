@@ -471,12 +471,108 @@
     - 更强的可观测性
   - 但必须放弃建立在错误 grammar 假设上的实现方式，尤其是：
     - 把 `NotFound()` 普遍解释成重 OOV / fallback
+
+## 2026-05-30
+
+### BPE 32K + KenLM 独立训练实验
+
+**目标：** 验证将字级 LM 替换为 BPE subword + KenLM n-gram 能否改善"向往"类整词被低估的问题。
+
+#### 训练过程
+
+- **语料组成：** 中文维基百科（~3 亿字）+ 新闻（~2 亿字）+ 中文小说（~3 亿字）= 总计约 **4.08 亿行 / 32GB** 纯净中文
+- **BPE 模型：** SentencePiece BPE 32K，确保"向往"被合并为单一 token
+- **训练平台：** 远程 Linux 服务器（31GB RAM, 8 vCPU）
+
+**训练的模型版本：**
+
+| 模型 | 参数 | 文件大小 | 训练时间 |
+|---|---|---|---|
+| BPE 4-gram | `--prune 0 0 1 2` + 8-bit 量化 | **7.4 GB** | ~44 min |
+| BPE 3-gram | `--prune 0 0 5` + 8-bit 量化 | **1.5 GB** | ~26 min |
+
+- "向往"在 BPE 32K 模型中成功合并为单一 token ✅
+- 远程服务器最终产出：`zh_bpe_32k.model`（0.7MB）、`zh_bpe_4gram_q8.klm`（7.4GB）、`zh_bpe_3gram_q8.klm`（1.5GB）
+
+#### C++ 集成
+
+- 在 witogram 的 `third_party/` 中添加 **SentencePiece** 作为 git submodule
+- 修改 `witogram.h`/`witogram.cc`：引入 `SentencePieceProcessor`，替换 `SplitUtf8Tokens()` 为 `Tokenize()`（BPE 优先，字符级回退）
+- 新增配置项 `grammar/bpe_model`，用于指定 SentencePiece `.model` 文件路径
+- 构建系统：修改 CMakeLists.txt 链接 `sentencepiece-static` + absl 库
+
+#### 基线结果（300 条测试）
+
+| 模型 | Top-1 | Top-3 | Wall Time | 模型大小 |
+|---|---|---|---|---|
+| Octagram（wanxiang-lts 原版） | **68.33%** | 70.00% | — | 234 MB |
+| Witogram（wanxiang-lts，当前） | ~53% | ~68% | — | 234 MB |
+| **BPE 32K + 4-gram q8** | **52.82%** | 64.12% | 292 s | **7.4 GB** |
+| **BPE 32K + 3-gram q8** | **53.00%** | 64.00% | 288 s | **1.5 GB** |
+
+#### 主要结论
+
+1. **BPE 3-gram 与 4-gram 准确率几乎相同**（53.0% vs 52.8%），但 3-gram 模型小 5x（1.5GB vs 7.4GB），性价比更高
+2. **BPE 模型与当前 wanxiang witogram 基准基本持平**（~53%），证明 BPE + KenLM 技术路线可行
+3. 但 BPE 模型的体积（即使 3-gram 1.5GB）仍远大于当前 wanxiang-lts（234MB），投入产出比偏低
+4. `expected_not_found_count ≈ 97`，说明核心瓶颈在词典/翻译器层面，不在 LM
+5. 方案 D（让模型本身提供更强分词证据）作为长期路线保留，短期内更建议继续方案 B/A/C
     - 假设当前万象 grammar 会广泛提供整词 token 命中
     - 继续维持“先放大候选池、再末端补救”的主搜索形态
 - 因而本轮阶段性交付后的下一步大方向已明确：
   - 先做 grammar 语义纠偏
   - 再做 translator 上游 contract 前移
   - 最后再让 `witset` 的句级优势建立在更干净的候选池上，争取持平并最终超过原版 `octagram`
+
+## 2026-05-30（下午）
+
+### Stock pipeline + witogram 对照基线
+
+**目标：** 将 witogram (KenLM) 接入 stock Rime pipeline (ScriptTranslator + Poet w=7)，与原版 octagram (GramDb) 做公平对比。
+
+#### C++ 实现
+
+- 创建 `SnapshotScriptTranslator`：继承 `ScriptTranslator`，override `Query()` 导出候选快照
+- 遇到 CMake OBJECT library 增量编译缓存问题：`snapshot_script_translator.obj` 编译成功但未被打包进 `librime.lib`
+- 修复：删除旧 `librime.lib` 强制重链后解决
+- 创建 `rime_dumpd` daemon 工具：单 session 运行，支持 stdin 命令协议 (`S/P/C/D/X`)，可传递 preceding_text
+
+#### 基线结果（daemon 模式，300 条）
+
+| 管线 | Grammar | Top-1 | Top-3 | Not Found |
+|---|---|---|---|---|
+| **Stock (Poet w=7)** | wanxiang-lts | **61.67%** | 63.33% | 110 |
+| **Stock (Poet w=7)** | BPE 3-gram | **61.67%** | 63.33% | 110 |
+| Witset (Poet w=80) | BPE 3-gram | 53.00% | 64.00% | 97 |
+| Octagram 原版 (Weasel) | GramDb | **68.33%** | 70.00% | — |
+
+#### 关键发现
+
+1. **Stock 管线比 Witset 管线高 +8.67%** — 问题在搜索架构（Poet w=7 vs w=80），不在 grammar
+2. **BPE = wanxiang 在 stock 管线下完全相同** — BPE 训练无独立价值，可以正式结项
+3. **witogram 仍落后 octagram 6.66%** — 两者数据同源（wanxiang-lts.klm 由 .gram 转换而来），差距来自评分机制差异
+
+#### 根因分析：KenLM backoff vs GramDb 碰撞检测
+
+- Octagram 的 `Query()` 是精确碰撞检测：GramDb trie 中查 `(context_prefix, word_prefix)` 是否存在
+  - 命中 → `-10`（固定惩罚），不命中 → `-12`（固定惩罚）
+  - 给出的是干净的 **yes/no** 信号
+- Witogram 的 `Query()` 是 KenLM backoff 概率估计：
+  - KenLM backoff 链会为未见 n-gram 推算近似概率
+  - 不存在搭配得到相对温和的概率（比直接 -12 更温和）
+  - 导致错误候选得分升高，正确候选区分度稀释
+
+**数据完全同源，差距来自评分语义：collision detection > backoff smoothing。**
+
+### BPE 实验正式结项
+
+| 实验 | 模型 | 管线 | Top-1 | 结论 |
+|---|---|---|---|---|
+| BPE 4-gram | 7.4GB | witset | 52.82% | 太大太慢 |
+| BPE 3-gram | 1.5GB | witset | 53.00% | 和 wanxiang 持平 |
+| BPE 3-gram | 1.5GB | **stock** | **61.67%** | **= wanxiang-lts** |
+
+**结论：BPE 没有提供独立于字符 n-gram 的额外信息。** "向往"被合并为单 token 在理论上正确，但在 order≥5 的字符 n-gram 模型中，整词信息已经被编码（P(往|向)），BPE token 不能增加新的区分度。
 - 根据后续新增的阶段约束，又重新审核并更新了：
   - `docs/pluginized_upstream_credibility_plan.md`
 - 这次更新重点不是推翻原架构，而是把第二阶段/第三阶段的两个大前提正式写死：
@@ -22625,3 +22721,236 @@ equest → batch_selected → admitted_new → compact → source_pool 全链路
 - 这意味着：
   - 继续在 HasConfidentPrimaryExact() / path-gate 层面围绕 case1 做微调，属于对着错误 family 的 next-hop cluster 努力
   - case1 的真正解法如果存在，必须回到更早的 **prefix beam 竞争** 或 **SelectTopLines 选择面**
+
+
+## 2026-05-27 路线A+B 完结：P1 收口判断
+
+### 路线A: 四拍前缀分项完整拆解
+
+复用 yizhixiangwang_beam_probe.jsonl 完成两 family 的四拍分项对比:
+
+| 步骤 | 输入 | 错误family | 正确family | Total gap | 主贡献 |
+|---|---|---|---|---|---|
+| 1 | yizhixiang | 一直想 rank1 (Total=-77) | 不在beam中 | N/A | 正确family从未进入|
+| 2 | yizhixiangwang | 一只想往 rank1 (Total=-145) | 一直向往 rank2 (Total=-173) | +27.87 | Base(91%%)+LmScaled(95%%) |
+| 3 | yizhixiangwangzhe | 一直想往这 rank2 (Total=-188) | 一直向往着 rank1 (Total=-188) | -0.24 | 正确靠LmRaw(-188 vs -211)反超 |
+| 4 | ...yuanfang | 一直想望着远方 rank1 (Total=-271) | 一直向往着远方 rank5 (Total=-271) | +0.81 | 终局Total仅差0.81分 |
+
+关键发现:
+- Step2 的 27.87 gap: Base(91%%) 来自Step1遗留, LmScaled(95%%) 来自 '想往'(-150.57) 比 '向往'(-173.46) 的 raw LM 更好
+- Step3 正确family反超靠 LmRaw, 但 LmScaled 缩放比例不同 (0.841 vs 0.742) 削弱了优势
+- Step4 终局 Total 仅差 0.81! 真正导致正确family落败的不是终局 Total, 而是SelectTopLines中间阶段砍掉了正确family的中间线 一直向往着远
+- gap 分散在 Base/LmScaled/CharFB/Dict 四个维度, 不存在单一可收口 P1 信号
+
+### 路线B: path-debt 信号验证
+
+用现有 beam probe 数据直接验证 debt profile 区分力:
+
+债务维度: CharFB, OovTok, Frag, Struct, Tail, Octa, JointPrior, JointBeam, EdgeRisk, AnchorDebt
+
+| 步骤 | 错误family | 正确family | 结论 |
+|---|---|---|---|
+| 1 | CharFB=1, rest=0 | N/A | - |
+| 2 | CharFB=2, rest=0 | CharFB=2, rest=0 | **完全一致** |
+| 3 | CharFB=2, rest=0 | CharFB=2, rest=0 | **完全一致** |
+| 4 | CharFB=2, rest=0 | CharFB=3, rest=0 | 仅终局+1 CharFB |
+
+结论: path-debt 信号在关键前缀分歧步骤(1-3)上完全无法区分两个family. 累计 CharFB/OovTok/Joint/Frag/Struct/Tail/Octa/EdgeRisk 在所有中间步骤上都完全相同. 仅在最终步骤正确family多出一个CharFB, 但此时距离已无法挽回. 这条路径不需要再写 C++ 验证.
+
+### P1 收口判断
+
+综合路线 A+B 的结论:
+
+1. case1 的前缀 gap 不是单一可修 P1 信号, 而是 n-gram beam search 的结构性特征 (Base 异步积累 + LM 词条级先验差 + LmScaled 缩放不对称 + CharFB 计数差异)
+2. path-debt 信号无法在关键分叉点区分两个 family
+3. P1 子线 (path_confirmation / family-tail / request-stage ownership / path-debt) 已基本覆盖, 没有发现新的未重复入口
+
+**建议: 当前 P1 预验证阶段已经可以收口.** 关键交付物:
+- SelectTopLines 上游断点证据 (正确family被78.8分挤出 top_candidate)
+- 四拍分项拆解 (gap来自Base+LmScaled双重主导)
+- path-debt null result (两种family在关键分叉步债务profile完全一致)
+- 路线图: 下一阶段应进入 P2 搜索形态改造, 而非继续在 P1 补丁
+
+
+## 2026-05-27 P2 第一刀：家族感知 SelectTopLines + PruneLinePool + 补充路线
+
+### 7A.1 步骤1根因
+- 在 yizhixiang 步骤扫描所有含 chr(21521) 即 向 的候选：
+  - 出现的全是同音字: 一只向(rank8), 一致向(rank11), 一支向(rank14)
+  - 一直向 从未出现
+- 结论: 一直向 不在3字词典入口中，正确family从第一拍就走错了text形态
+
+### 7A.2 SelectTopLines 家族保留
+- 在 SelectTopLines() 中新增家族感知逻辑：
+  - 用 context_suffix 最后2字符作为 family tag
+  - 对 top_k 中未代表的 family，额外保留最佳行(最多+2 slots)
+- 编译通过，但 top_candidate 列表未改变
+- 原因: 一直向往着远 在 PruneLinePool 阶段已被裁剪
+
+### 7A.3 PruneLinePool 家族保留  
+- 在 PruneLinePool() 中新增家族感知逻辑(同 SelectTopLines 模式)
+- 编译部署通过
+- case1 终局 top1 仍为 一直想望着远方
+- 原因: 78.8分gap太大，即使保留也无法在后续步骤追上
+
+### 7A.4 LmScaled 缩放不对称调查
+- 修正了之前的错误分析方向：
+  - 之前以为正确family被缩放得更狠(ratio更低)
+  - 实际数据：正确family在所有步骤ratio都更高(更接近1.0)
+  - Step2: 正确0.815 vs 错误0.764
+  - Step3: 正确0.841 vs 错误0.742
+  - Step4: 正确0.910 vs 错误0.847
+- 结论: LM缩放实际偏向正确family。真正的问题是 raw n-gram 先验差距
+  - 向往 LmRaw=-173.46 vs 想往 LmRaw=-150.57，gap=22.89
+  - 即使缩放后 gap 仍然 26.36
+
+### P2 第一刀收口
+所有 P2 尝试均确认：case1 的症结是底层 n-gram 分值偏差，不是搜索形态或 contract 信号问题。
+当前证据链完整覆盖了: 词典覆盖(db) -> raw LM(n-gram模型) -> 缩放(实际偏向正确) -> 压缩剪枝(已加家族保留) -> SelectTopLines(已加家族保留) -> 终局。
+
+
+## 2026-05-27 最终复盘：P0-P1-P2全覆盖 + octagram对标
+
+### 路线扫尾：三个零权重参数
+- 测试了 upstream_family_tail_weight=1.0, upstream_linked_guard_weight=1.0, upstream_validated_continuation_weight=1.0, upstream_path_prior_weight=1.0
+- case1 top1 仍为 一直想望着远方，无效果
+- 已复位所有参数
+
+### SyllableGraph credibility / edge_prior 深度调查
+- CredibilityLedgerBuilder 已有 infrastructure: kAmbiguousCredibilityMagnitude=ln(1e10)=23.03
+- use_upstream_edge_prior=true, weight=4.0 (已在 build schema 中启用)
+- 权重提到20.0时 case1 top1 从 一直想望着远方 变为 一直想往这远方(仍错)
+- 关键差异: octagram 的 credibility 通过 props->credibility -> chunk.credibility -> entry->weight 直接进入词条权重
+  witset 的 edge_prior 通过 ComputeTranslatorCompetitiveEdgeBias (竞争性 bias) 生效, 只对 clean_gap > -1.35 的 risky edge 惩罚
+  两个系统对同一信号的处置方式根本不同
+
+### 300基线尝试
+- 尝试 run_local_snapshot_baseline.py --limit 300
+- 控制台进程超时(jinchenshangbandelushang)，schema中有残留 debug 配置(debug_dump_local_beam_payload/next_hop_probe=true)
+- 需清理后重试
+
+### 方案去重结论
+- 方案A(前移为路径先验/joint_prior): TRIED, Top-1=0.538206, 无效(line 333-345)
+- 方案B(joint-aware beam state): TRIED, Top-1=0.538206, 无效(line 310-322)
+- 方案C(近似beam-Viterbi状态合并): TRIED, Top-1=0.541528, 略微提升但远不及octagram(line 358-366)
+- Octa硬惩罚: TRIED, Top-1=0.538206, 无效(line 251-267)
+- 方案D: 未尝试，被标记为长期路线
+
+### PruneLinePool + SelectTopLines 家族保留
+- 已实现 context_suffix 最后2字符作为 family tag
+- PruneLinePool 最多保留2个额外家族
+- SelectTopLines 最多保留2个额外家族
+- case1 终局未翻正: 78.8分 gap 太大，家族保留不足以在后续步骤追上
+
+### 步骤1根因
+- 一直向 从未在 yizhixiang 步骤出现
+- 出现的含 向 的候选全是同音字: 一只向(rank8), 一致向(rank11), 一支向(rank14)
+- 结论: 一直向 不在3字词典入口中，正确family从第一拍就缺位
+
+### LmScaled缩放不对称: 修正了之前的错误判断
+- 之前认为正确family被缩放得更狠
+- 实际: 正确family在所有步骤 ratio都更高(缩放偏向正确)
+  Step2: 正确0.815 vs 错误0.764
+  Step3: 正确0.841 vs 错误0.742
+  Step4: 正确0.910 vs 错误0.847
+- 结论: LM缩放实际偏向正确family。真正问题是 raw n-gram先验差距(向往-173.46 vs 想往-150.57)
+
+### case1 完整证据链
+octagram做对了 case1 (top1=一直向往着远方)
+witogram做错了 (top1=一直想望着远方)
+差距来源链: 词典覆盖(step1缺位) -> raw LM(22.89 gap) -> SelectTopLines(78.8 gap砍掉正确线) -> 终局
+所有不改模型/字典的路线均已尝试, 无法翻正
+
+
+## 2026-05-27 F路线 + word-ambiguity + D2B计划
+
+### F路线：直接credibility penalty
+- 将 RewriteWordGraph 中的 edge_risk 惩罚从竞争性 bias 改为直接 penalty
+- 新增 direct_credibility_penalty = -weight * ln(1e10) * edge_risk
+- 同时保留原有竞争性 edge_bias
+- case1 未翻正: edge_risk(=0)从prism未获kAmbiguousSpelling
+
+### word-ambiguity 补丁
+- 在 RewriteWordGraph 第一pass中收集同边候选文本，>=2种文本则标记为word-ambiguous
+- 统一惩罚: -weight * ln(1e10) * 0.5
+- per-candidate 差异化: (ebest - candidate->weight) * weight * 0.25
+- case1 未翻正: 正确/错误候选可能在不同WordGraph边, 或差距不够
+
+### D2B 计划文档
+- 已创建 docs/D2B_BPE_KenLM_训练计划.md
+- 路线: 维基语料 → SentencePiece BPE 8K vocab → KenLM 6-gram → 双模型并存
+- 时间: 1-2天
+
+### 300基线最终数据
+- Top-1: 53.49% vs octagram 68.33% (差14.84pp)
+- Top-3: 71.76% vs octagram 70.00% (witogram领先1.76pp)
+- 结论: witogram候选生成不差, 排序偏差是主要gap
+
+
+## 2026-05-27 octagram对标实验 + 三层贡献分解
+
+### 实验1: 纯 dict+credibility (宽beam)
+- lm_total=0, 所有adjustment清零, 只保留dict_score+upstream_edge_prior
+- Top-1=22.3%, Top-3=33.9%, avg_candidates=19.77
+- 去掉LM后正确率崩塌, LM贡献约31pp (53.5-22.3)
+
+### 实验2: 纯 dict+credibility + 紧beam (模拟octagram搜索)
+- beam=8, max_cand=5, sentence_beam=16, sentence_soft=200, word_beam=12, min_state=true
+- Top-1=29.2%, Top-3=38.9%, avg_candidates=4.99
+- 紧beam提升+6.9pp但仍远低于octagram 68.3%
+
+### 三层贡献分解(300基线)
+- octagram 68.3%
+- dict+credibility+紧搜索: 29.2% (witset基础)
+- +KenLM(字级LM): 53.5% (+24.3pp, LM贡献)
+- octagram薄层grammar+搜索架构差异: 39.1pp gap
+
+### 权重扫描结果(36组合)
+- lm=[0.1,0.15,0.2,0.3,0.5,0.7,1.0] × dict=[1.0,2.0,3.0,4.0,5.0,6.0,8.0,10.0] + D3=[0.15,1.0,2.0,5.0,10.0,15.0]
+- 全部组合case1未翻正
+- 原因: dict gap(1.0)远小于LM gap(22.89), 对称缩放无法翻转
+
+### D2B BPE KenLM
+- 文档: docs/D2B_BPE_KenLM_训练计划.md
+- 路线: 维基语料 -> SentencePiece BPE 8K-16K -> KenLM 6-gram -> 替换wanxiang klm
+
+### 当前状态
+| 指标 | dict+cred(紧) | witogram | octagram |
+|---|---|---|---|
+| Top-1 | 29.2% | 53.5% | 68.3% |
+| Top-3 | 38.9% | 71.8% | 70.0% |
+| avg_cand | 4.99 | 19.64 | — |
+
+## 2026-05-31
+
+### Collocation 模式实验 & 原生 ARPA 训练
+
+#### Collocation 模式
+- 在 witogram 中实现 octagram 的碰撞检测语义：用 KenLM FullScoreReturn.ngram_length 代替 GramDb 的 Trie 查找
+- 新增配置：grammar/collocation_mode: true，collocation_penalty，
+on_collocation_penalty
+- 实现 QueryCollocation()：对多个 context 后缀长度 × word 前缀长度枚举检查 n-gram 是否存在
+- 基线：stock pipeline + collocation 模式 = **63.67%**（vs backoff 61.67%，+2%；vs octagram 68.33%，-4.66%）
+
+#### 根因：dump_to_arpa 转换引入的人工 n-gram
+- GramDb→KenLM 转换为满足 ARPA 格式的 backoff 一致性，必须插入缺失前缀 n-gram（得分 -10.0，本应不存在）
+- 这些人工 n-gram 在 
+gram_length 检查中产生假阳性，稀释了碰撞检测的区分度
+- 尝试 "标记" 方案（-99.0 得分 / backoff=0）：build_binary 成功但运行时 FormatLoadException
+- 尝试 "分数门槛" 方案：人工 n-gram（约 -37.5）和真实低频 n-gram（可低至 -126）的分数区间重叠，无法选择唯一阈值
+
+#### 原生 ARPA 训练结果
+- 在远程服务器（31GB RAM）用 32GB 原始中文语料训练原生字符 6-gram KenLM 模型
+- 语料：4.08 亿行 / 42GB 字符切分后
+- lmplz -o 6 --discount_fallback --prune 0 0 2 5 10 20 -S 80%
+- ARPA：15GB，KLM（8-bit 量化）：**2.3GB**
+- **结果：60.67%**，比 wanxiang 转换版还低 3%
+- **结论：RIME-LMDG 精选语料 > 32GB 通用网络语料。** 数据质量比数据量更重要。
+
+#### 选项 A：GramDb 直读路径
+- 绕开 dump_to_arpa 转换，直接加载 .gram 文件
+- 从 librime-octagram 复制 gram_db、gram_encoding 代码到 witogram/src
+- 在 witogram 中实现 `QueryGramDb()`，完全复制 octagram 的 GramDb::Lookup() 语义
+- 自动选择：有 .gram 文件 → GramDb 直读，有 .klm 文件 → KenLM
+- **基线：68.00%** ✅ （vs octagram 原版 68.33%，差距在统计噪声内）
+- **结论：现代化后的 witogram 可在不失精度的前提下替代 octagram**

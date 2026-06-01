@@ -3,9 +3,16 @@
 
 #include <rime/common.h>
 #include <rime/component.h>
-#include <rime/resource.h>
 #include <rime/gear/grammar.h>
+#include <rime/resource.h>
+#include <memory>
 #include <mutex>
+#include <string>
+#include <vector>
+
+namespace sentencepiece {
+class SentencePieceProcessor;
+}
 
 namespace lm {
 namespace ngram {
@@ -15,6 +22,7 @@ class QuantTrieModel;
 
 namespace rime {
 
+class GramDb;
 extern const ResourceType kGramDbType;
 extern const string kGrammarDefaultLanguage;
 
@@ -59,6 +67,12 @@ class Witogram : public Grammar {
   double Query(const string& context,
                const string& word,
                bool is_rear) override;
+  double QueryGramDb(const string& context,
+                      const string& word,
+                      bool is_rear) const;
+  double QueryCollocation(const string& context,
+                           const string& word,
+                           bool is_rear) const;
   bool InterpretGrammarEvidence(const string& context,
                                 const string& word,
                                 bool is_rear,
@@ -73,6 +87,11 @@ class Witogram : public Grammar {
  private:
   the<GrammarConfig> config_;
   lm::ngram::QuantTrieModel* model_ = nullptr;
+  GramDb* gram_db_ = nullptr;
+  std::unique_ptr<sentencepiece::SentencePieceProcessor> bpe_processor_;
+  bool use_bpe_ = false;
+
+  std::vector<std::string> Tokenize(const string& text) const;
 };
 
 class WitogramComponent : public Grammar::Component {
@@ -83,9 +102,11 @@ class WitogramComponent : public Grammar::Component {
   Witogram* Create(Config* config) override;
 
   lm::ngram::QuantTrieModel* GetModel(const string& language);
+  GramDb* GetGramDb(const string& language);
 
  private:
   map<string, the<lm::ngram::QuantTrieModel>> model_by_language_;
+  map<string, the<GramDb>> gram_db_by_language_;
   std::mutex mutex_;
 };
 

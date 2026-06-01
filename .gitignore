@@ -1,4 +1,5 @@
 build/
+build_check/
 .cache/
 __pycache__/
 *.obj
@@ -8,5 +9,9 @@ __pycache__/
 *.exe
 *.pdb
 *.exp
+*.jsonl
+training/
 models/
 issues/
+
+*.json

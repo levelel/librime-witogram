@@ -5,6 +5,9 @@
 #include <rime/resource.h>
 #include <rime/service.h>
 #include <utf8.h>
+#include <sentencepiece_processor.h>
+#include "octagram_gram_db.h"
+#include "octagram_encoding.h"
 #include "lm/model.hh"
 #include "lm/state.hh"
 
@@ -18,6 +21,36 @@ constexpr double kCharPathBlend = 0.40;
 constexpr double kNeutralMissingUnknownPenaltyScale = 1.0;
 constexpr double kMixedTokenMissingUnknownPenaltyScale = 0.75;
 constexpr double kSingleTokenMissingUnknownPenaltyScale = 0.75;
+
+inline const char* str_begin(const string& str) {
+  return str.c_str();
+}
+
+inline const char* str_end(const string& str) {
+  return str.c_str() + str.length();
+}
+
+inline const char* last_n_unicode(const string& str, int max, int& out_count) {
+  const char* begin = str_begin(str);
+  const char* p = str_end(str);
+  out_count = 0;
+  while (p != begin && out_count < max) {
+    utf8::unchecked::prior(p);
+    ++out_count;
+  }
+  return p;
+}
+
+inline const char* first_n_unicode(const string& str, int max, int& out_count) {
+  const char* p = str_begin(str);
+  const char* end = str_end(str);
+  out_count = 0;
+  while (p != end && out_count < max) {
+    utf8::unchecked::next(p);
+    ++out_count;
+  }
+  return p;
+}
 
 std::vector<string> SplitUtf8Tokens(const string& text) {
   std::vector<string> tokens;
@@ -94,11 +127,25 @@ void AdvanceState(const lm::ngram::QuantTrieModel* model,
 
 }  // namespace
 
+std::vector<string> Witogram::Tokenize(const string& text) const {
+  if (use_bpe_ && bpe_processor_) {
+    std::vector<string> pieces;
+    bpe_processor_->Encode(text, &pieces);
+    return pieces;
+  }
+  return SplitUtf8Tokens(text);
+}
+
 struct GrammarConfig {
   double ngram_weight = 1.0;  // Interpolation weight for KenLM log prob
+  bool collocation_mode = false;
+  double collocation_penalty = -12;
+  double non_collocation_penalty = -12;
+  double rear_penalty = -18;
 };
 
 const ResourceType kGramDbType = {"gram_db", "", ".klm"};
+const ResourceType kGramDbGramType = {"gram_db_gram", "", ".gram"};
 const string kGrammarDefaultLanguage = "zh-hant";
 
 Witogram::Witogram(Config* config, WitogramComponent* component)
@@ -111,9 +158,47 @@ Witogram::Witogram(Config* config, WitogramComponent* component)
       return;
     }
     config->GetDouble("grammar/weight", &config_->ngram_weight);
+    config->GetBool("grammar/collocation_mode", &config_->collocation_mode);
+    config->GetDouble("grammar/collocation_penalty",
+                      &config_->collocation_penalty);
+    config->GetDouble("grammar/non_collocation_penalty",
+                      &config_->non_collocation_penalty);
+    config->GetDouble("grammar/rear_penalty", &config_->rear_penalty);
+
+    string bpe_model_path;
+    if (config->GetString("grammar/bpe_model", &bpe_model_path)) {
+      auto resolver = Service::instance().CreateResourceResolver(
+          ResourceType{"bpe_model", "", ".model"});
+      string resolved = resolver->ResolvePath(bpe_model_path).string();
+      bpe_processor_ = std::make_unique<sentencepiece::SentencePieceProcessor>();
+      auto status = bpe_processor_->Load(resolved);
+      if (status.ok()) {
+        use_bpe_ = true;
+        LOG(INFO) << "BPE model loaded: " << resolved;
+      } else {
+        LOG(ERROR) << "Failed to load BPE model: " << resolved
+                    << " (" << status.ToString() << ")";
+      }
+    }
   }
   if (!language.empty()) {
-    model_ = component->GetModel(language);
+    try {
+      model_ = component->GetModel(language);
+      if (model_) {
+        LOG(INFO) << "successfully loaded KenLM model: " << language;
+      }
+    } catch (const std::exception& e) {
+      LOG(ERROR) << "failed to load KenLM model: " << language << ": " << e.what();
+    }
+
+    // Try loading GramDb (.gram file) as well
+    gram_db_ = component->GetGramDb(language);
+    if (gram_db_) {
+      LOG(INFO) << "successfully loaded GramDb for: " << language;
+    } else {
+      LOG(INFO) << "GramDb not available for: " << language
+                << " (resolver may not find .gram file)";
+    }
   }
 }
 
@@ -143,7 +228,7 @@ bool Witogram::InterpretGrammarEvidence(const string& context,
   }
 
   const int max_context_order = static_cast<int>(max_context_tokens());
-  auto context_tokens = SplitUtf8Tokens(context);
+  auto context_tokens = Tokenize(context);
   if (static_cast<int>(context_tokens.size()) > max_context_order) {
     context_tokens.erase(context_tokens.begin(),
                          context_tokens.end() - max_context_order);
@@ -159,7 +244,7 @@ bool Witogram::InterpretGrammarEvidence(const string& context,
   }
 
   const auto& vocab = model_->GetVocabulary();
-  const auto word_tokens = SplitUtf8Tokens(word);
+  const auto word_tokens = Tokenize(word);
   features->token_count = std::max<size_t>(1, word_tokens.size());
 
   lm::ngram::State char_state = state;
@@ -287,11 +372,153 @@ bool Witogram::ScoreFeatures(const string& context,
 double Witogram::Query(const string& context,
                        const string& word,
                        bool is_rear) {
+  // GramDb path: exact same semantics as original octagram
+  if (gram_db_) {
+    return QueryGramDb(context, word, is_rear);
+  }
+  if (config_->collocation_mode) {
+    return QueryCollocation(context, word, is_rear);
+  }
   WitogramScoreFeatures features;
   if (!ScoreFeatures(context, word, is_rear, &features)) {
     return 0.0;
   }
   return features.total_log10 * ngram_weight();
+}
+
+double Witogram::QueryCollocation(const string& context,
+                                   const string& word,
+                                   bool is_rear) const {
+  if (!model_ || context.empty()) {
+    return config_->non_collocation_penalty;
+  }
+
+  auto context_tokens = Tokenize(context);
+  auto word_tokens = Tokenize(word);
+  const auto& vocab = model_->GetVocabulary();
+
+  // Try multiple context suffix lengths (like octagram's prefix search)
+  int max_ctx_len = (std::min)((size_t)4, context_tokens.size());
+  bool collocation_found = false;
+
+  for (int ctx_len = max_ctx_len; ctx_len >= 1 && !collocation_found; --ctx_len) {
+    lm::ngram::State state = model_->BeginSentenceState();
+    bool ctx_ok = true;
+    size_t start = context_tokens.size() - ctx_len;
+    for (size_t i = start; i < context_tokens.size(); ++i) {
+      lm::WordIndex wid = vocab.Index(context_tokens[i]);
+      if (wid == vocab.NotFound()) { ctx_ok = false; break; }
+      model_->FullScore(state, wid, state);
+    }
+    if (!ctx_ok) continue;
+
+    for (size_t wlen = 1; wlen <= word_tokens.size() && !collocation_found; ++wlen) {
+      lm::ngram::State ws = state;
+      bool w_ok = true;
+      float min_prob = 0.0f;
+      for (size_t j = 0; j < wlen; ++j) {
+        lm::WordIndex wid = vocab.Index(word_tokens[j]);
+        if (wid == vocab.NotFound()) { w_ok = false; break; }
+        auto ret = model_->FullScore(ws, wid, ws);
+        if (j == 0) min_prob = ret.prob;
+        else if (ret.prob < min_prob) min_prob = ret.prob;
+      }
+      // All word tokens scored without NotFound → valid collocation
+      if (w_ok) {
+        collocation_found = true;
+      }
+    }
+  }
+
+  double result = collocation_found ? config_->collocation_penalty
+                                    : config_->non_collocation_penalty;
+
+  if (is_rear && !word_tokens.empty()) {
+    lm::ngram::State word_state = model_->BeginSentenceState();
+    bool word_hits = true;
+    for (const auto& t : word_tokens) {
+      lm::WordIndex wid = vocab.Index(t);
+      if (wid == vocab.NotFound()) { word_hits = false; break; }
+      model_->FullScore(word_state, wid, word_state);
+    }
+    if (word_hits) {
+      auto rear_ret = model_->FullScore(word_state, vocab.EndSentence(),
+                                         word_state);
+      if (rear_ret.ngram_length >= (unsigned)(word_tokens.size() + 1)) {
+        result = std::min(result, config_->rear_penalty);
+      }
+    }
+  }
+
+  return result;
+}
+
+double Witogram::QueryGramDb(const string& context,
+                              const string& word,
+                              bool is_rear) const {
+  if (!gram_db_ || context.empty()) {
+    return -12;
+  }
+
+  constexpr int kMaxEncodedUnicode = 8;
+  constexpr double kValueScale = 10000;
+  constexpr double kCollocationPenalty = -12;
+  constexpr double kWeakCollocationPenalty = -24;
+  constexpr double kNonCollocationPenalty = -12;
+  constexpr double kRearPenalty = -18;
+
+  double result = kNonCollocationPenalty;
+  GramDb::Match matches[GramDb::kMaxResults];
+  int n = (std::min)(kMaxEncodedUnicode, 3);
+
+  int context_len = 0;
+  string context_query = grammar::encode(
+      last_n_unicode(context, n, context_len),
+      str_end(context));
+  int word_query_len = 0;
+  string word_query = grammar::encode(
+      str_begin(word),
+      first_n_unicode(word, n, word_query_len));
+
+  for (const char* context_ptr = str_begin(context_query);
+       context_len > 0;
+       --context_len, context_ptr = grammar::next_unicode(context_ptr)) {
+    int num_results = gram_db_->Lookup(context_ptr, word_query, matches);
+    for (auto i = 0; i < num_results; ++i) {
+      const auto& match(matches[i]);
+      const int match_len = grammar::unicode_length(word_query, match.length);
+      const int collocation_len = context_len + match_len;
+      double scaled = match.value >= 0
+          ? double(match.value) / kValueScale
+          : -1;
+      double penalty = (collocation_len >= 3 ||
+                        (context_ptr == str_begin(context_query) &&
+                         match.length == word_query.length()))
+          ? kCollocationPenalty
+          : kWeakCollocationPenalty;
+      double new_value = scaled + penalty;
+      if (new_value > result) {
+        result = new_value;
+      }
+    }
+  }
+
+  if (is_rear) {
+    int word_len = utf8::unchecked::distance(word.c_str(),
+                                             word.c_str() + word.length());
+    if (word_query_len == word_len &&
+        gram_db_->Lookup(word_query, "$", matches) > 0) {
+      double scaled = matches[0].value >= 0
+          ? double(matches[0].value) / kValueScale
+          : -1;
+      double new_value = scaled + kRearPenalty;
+      if (new_value > result) {
+        result = new_value;
+      }
+    }
+  }
+
+  return result;
 }
 
 WitogramComponent::WitogramComponent() {}
@@ -316,6 +543,24 @@ lm::ngram::QuantTrieModel* WitogramComponent::GetModel(const string& language) {
       LOG(ERROR) << "failed to load KenLM database: " << language << ", error: " << e.what();
       return nullptr;
     }
+  }
+  return loaded.get();
+}
+
+GramDb* WitogramComponent::GetGramDb(const string& language) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto& loaded = gram_db_by_language_[language];
+  if (!loaded) {
+    the<ResourceResolver> resolver(
+        Service::instance().CreateResourceResolver(kGramDbGramType));
+    auto gram_path = resolver->ResolvePath(language);
+    loaded = std::make_unique<GramDb>(gram_path);
+    if (!loaded->Load()) {
+      LOG(ERROR) << "failed to load GramDb: " << language;
+      gram_db_by_language_.erase(language);
+      return nullptr;
+    }
+    LOG(INFO) << "successfully loaded GramDb: " << gram_path.string();
   }
   return loaded.get();
 }

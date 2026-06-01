@@ -455,3 +455,100 @@
 - 保留 `witogram` 的强上下文和统一建模方向；
 - 同时把它的 contract、语义和搜索形态重新适配到当前万象词库与万象模型的现实形态上。
 
+
+
+---
+
+## 10. P0-P1-P2 执行结论（2026-05-27 更新）
+
+### 10.1 已完成覆盖
+
+| 阶段 | 核心交付 | case1 效果 | case2 效果 |
+|---|---|---|---|
+| P0 | grammar语义纠偏 | 未翻正 | 已翻正 |
+| P1 | path_confirmation/family-tail/request-stage/path-debt | 未翻正(均判为下游症状) | 保持正确 |
+| P2 | SelectTopLines家族保留/edge_prior调查 | 未翻正 | 保持正确 |
+
+### 10.2 case1 根因完整链
+
+octagram top1=一直向往着远方, witogram top1=一直想望着远方. 来源链:
+词典覆盖(一直向不在step1) -> raw LM gap 22.89(向往-173 vs 想往-151)
+  -> Base积累91% + LmScaled95% -> SelectTopLines 78.8分砍掉正确线 -> 终局错误
+
+### 10.3 edge_prior/credibility 不如 octagram 的原因
+- witset: edge_risk -> ComputeTranslatorCompetitiveEdgeBias (竞争性bias, 仅对clean_gap > -1.35生效)
+- octagram: credibility -> entry->weight (直接无条件减权)
+- 两者对同一信号的处置方式根本不同
+
+### 10.4 方案ABCD去重
+- A(joint_prior前移): TRIED Top-1=0.538
+- B(joint-aware beam): TRIED Top-1=0.538
+- C(beam-Viterbi): TRIED Top-1=0.542
+- D(模型侧强化): 未尝试，长期路线
+
+### 10.5 更新判断
+原结论需要细化: case2类已持平octagram, case1类不改模型/字典无法持平.
+整体水平取决于两类比例, 300基线待跑方可量化.
+方案D是唯一未覆盖且有理论依据的方向.
+
+
+## 11. F 路线 + word-ambiguity 检测结论（2026-05-27 更新）
+
+### 11.1 F 路线（直接 credibility penalty）
+- 将 edge_risk 惩罚从竞争性 bias 改为直接 penalty（kAmbiguousCredibilityMagnitude * weight * risk）
+- 同时保留原有竞争性 edge_bias
+- 结果: case1 未翻正。原因是 edge_risk = 0 —— SyllableGraph 没有从 prism 收到 kAmbiguousSpelling
+
+### 11.2 word-ambiguity 补丁
+- 在 RewriteWordGraph 中新增 word-level 歧义检测：收集同边候选文本集合，>=2 种不同文本则标记为 word-ambiguous
+- 对 word-ambiguous 边：统一施加 kAmbiguousCredibilityMagnitude * weight * 0.5 惩罚
+- 对 word-ambiguous 边也施加 per-candidate 差异化惩罚：(ebest - candidate->weight) * weight * 0.25
+- 结果: case1 未翻正。word-ambiguity 基础设施已就位，但正确/错误候选可能处在不同 WordGraph 边中
+
+### 11.3 prism 字符级歧义缺口
+- 根本原因: prism 数据中 xiang/wang 的 spelling type 不是 kAmbiguousSpelling
+- prism 是 Rime 编译产物，witogram/witset 无法修改
+- word-level 歧义检测是插件层面的补救，但覆盖面取决于同一 WordGraph 边是否同时包含正确和错误候选
+
+## 12. D2B 训练计划
+- 文档: D2B_BPE_KenLM_训练计划.md
+- BPE + 维基语料 + KenLM 训练，作为当前 KLM 的补充
+- 时间估计: 1-2 天
+
+## 13. 当前状态总结（2026-05-27）
+| 维度 | 状态 | Top-1 | Top-3 | vs octagram Top-1 |
+|---|---|---|---|---|
+| witogram 当前 | — | 53.5% | 71.8% | -14.8pp |
+| octagram 参照 | — | 68.3% | 70.0% | baseline |
+| P0-P1-P2 全覆盖 | 已完成 | — | — | — |
+| D3(伪词打分) | 已落地 | — | — | — |
+| F(直接credibility) | 已落地 | — | — | — |
+| word-ambiguity | 已落地 | — | — | — |
+| D2B(BPE+KenLM) | 计划就绪 | — | — | — |
+| D1(词级KenLM) | 未开始 | — | — | — |
+
+
+## 14. octagram 对标实验（2026-05-27 更新）
+
+### 14.1 实验设计
+- 实验1: lm_total=0 + 全部adjustment清零, 仅保留 dict_score + upstream_edge_prior
+- 实验2: 同上 + 紧beam (beam=8, sentence_beam=16, min_state=true)
+
+### 14.2 结果
+| 配置 | Top-1 | Top-3 | avg_cand |
+|---|---|---|---|
+| dict+cred, 宽beam | 22.3% | 33.9% | 19.77 |
+| dict+cred, 紧beam | 29.2% | 38.9% | 4.99 |
+| witogram 完整 | 53.5% | 71.8% | 19.64 |
+| octagram | 68.3% | 70.0% | — |
+
+### 14.3 结论
+1. 纯 dict+credibility (即使紧beam) 只能达到 29.2%, 远低于 octagram 68.3%
+2. KenLM(字级)贡献了 +24.3pp (29.2->53.5)
+3. octagram 剩余的 ~39pp 来自薄层grammar + 搜索架构差异 (gate-before-expand vs expand-then-gate)
+4. 权重扫描(36组合)全部无法翻正 case1: dict gap(1.0)远小于LM gap(22.89)
+
+### 14.4 路线更新
+- 已否决: 纯权重调优、纯搜索约束
+- 唯一可行: D2B BPE KenLM (从tokenization层面消除LM偏差)
+- 后续可叠加: 方案C (在正确LM基础上优化搜索)

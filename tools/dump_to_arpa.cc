@@ -126,7 +126,7 @@ int main(int argc, char** argv) {
       if (last_space != std::string::npos) {
         std::string prefix = ngram.substr(0, last_space);
         if (ngrams[i-1].find(prefix) == ngrams[i-1].end() && missing_prefixes.find(prefix) == missing_prefixes.end()) {
-          missing_prefixes[prefix] = -10.0f; // Arbitrary low score
+          missing_prefixes[prefix] = -30.0f; // Artificial prefix (low score, filtered at runtime)
         }
       }
     }
@@ -187,11 +187,7 @@ int main(int argc, char** argv) {
       // prob word [backoff]
       out << std::fixed << std::setprecision(6) << kv.second << "\t" << kv.first;
       if (i < max_order) {
-        // [v6.0] Heuristic Backoff Penalty
-        // We MUST provide a negative backoff weight (e.g. -1.0). 
-        // If it is 0.0, backing off has no penalty, which causes shorter n-grams 
-        // to unjustly outscore longer exact-match n-grams.
-        out << "\t-1.0"; 
+        out << "\t-1.0";
       }
       out << "\n";
     }
